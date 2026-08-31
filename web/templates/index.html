@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SISTEMA MONITOR MULTI-SENSOR IoT</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/dashboard-fixes.css">
+</head>
+<body>
+    <div class="cyber-scanline"></div>
+    
+    <!-- CONTENEDOR PRINCIPAL -->
+    <div class="dashboard-container">
+        
+        <!-- CABECERA -->
+        <header class="dashboard-header">
+            <div class="logo-area">
+                <i class="fa-solid fa-gauge-high logo-icon"></i>
+                <div class="logo-text">
+                    <h1>MONITOR <span class="highlight">MULTI-SENSOR</span></h1>
+                    <p class="subtitle">ESP32 INDUSTRIAL TELEMETRY NODE</p>
+                </div>
+            </div>
+            
+            <div class="status-panel">
+                <div class="status-item">
+                    <span class="label">ESTADO:</span>
+                    <span id="conn-status" class="value status-disconnected"><i class="fa-solid fa-circle-dot"></i> DESCONECTADO</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">ORIGEN:</span>
+                    <span id="data-source" class="value">NINGUNO</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">UPTIME:</span>
+                    <span id="uptime-val" class="value">00:00:00</span>
+                </div>
+                <div class="status-item wifi-only">
+                    <span class="label">SENAL:</span>
+                    <span id="wifi-rssi" class="value">0 dBm</span>
+                    <span id="wifi-signal-bars" class="signal-bars" title="Calidad de senal WiFi">
+                        <i class="bar bar-1"></i><i class="bar bar-2"></i><i class="bar bar-3"></i><i class="bar bar-4"></i>
+                    </span>
+                </div>
+            </div>
+        </header>
+
+        <!-- GUIA RAPIDA (colapsable) -->
+        <div class="control-box quick-guide" id="quick-guide-box">
+            <h3 class="quick-guide-toggle" id="quick-guide-toggle">
+                <i class="fa-solid fa-circle-info"></i> GUIA RAPIDA DE USO
+                <i class="fa-solid fa-chevron-down toggle-arrow" id="quick-guide-arrow"></i>
+            </h3>
+            <div class="quick-guide-body" id="quick-guide-body">
+                <ol>
+                    <li><strong>Conecta el ESP32</strong> por USB o revisa que ya tenga WiFi configurado (panel "RED &amp; SERVIDOR" en la barra lateral). El estado de conexion aparece arriba a la derecha.</li>
+                    <li><strong>Espera el precalentamiento</strong> del MQ-4 (5 min) antes de calibrar o confiar en las lecturas de gas: el indicador "gas_ok" en las tarjetas de metricas te avisa cuando ya esta listo.</li>
+                    <li><strong>Calibra en este orden</strong>: primero "Calibrar MQ-4" (aire limpio), despues la curva multipunto si tenes gas de referencia, y por ultimo los offsets de distancia/DHT11 si notas desvios.</li>
+                    <li><strong>Ajusta los umbrales de alerta</strong> a los valores reales de tu reactor para que las alarmas sonoras/visuales tengan sentido.</li>
+                    <li>Pasa el mouse sobre el icono <i class="fa-solid fa-circle-info"></i> de cada panel para ver que hace cada seccion.</li>
+                </ol>
+            </div>
+        </div>
+
+        <!-- BANNER DE ALERTA GLOBAL -->
+        <div id="global-alert-banner" class="alert-banner hidden">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <span id="alert-banner-text">SISTEMA EN ESTADO CRITICO</span>
+            <button class="mute-btn" id="mute-alert-btn"><i class="fa-solid fa-volume-high"></i> Silenciar</button>
+        </div>
+
+        <!-- SECCION DE METRICAS PRINCIPALES -->
+        <section class="metrics-grid">
+            
+            <!-- TEMPERATURA -->
+            <div class="metric-card card-temp" id="card-temp">
+                <div class="card-glow"></div>
+                <div class="card-header">
+                    <h3>TEMPERATURA</h3>
+                    <i class="fa-solid fa-thermometer-half icon"></i>
+                </div>
+                <div class="card-value">
+                    <span id="temp-val">--.-</span><span class="unit">C</span>
+                </div>
+                <div class="card-footer">
+                    <span class="range-info">Normal: 15C - 35C</span>
+                </div>
+            </div>
+
+            <!-- HUMEDAD -->
+            <div class="metric-card card-hum" id="card-hum">
+                <div class="card-glow"></div>
+                <div class="card-header">
+                    <h3>HUMEDAD</h3>
+                    <i class="fa-solid fa-droplet icon"></i>
+                </div>
+                <div class="card-value">
+                    <span id="hum-val">--.-</span><span class="unit">%</span>
+                </div>
+                <div class="card-footer">
+                    <span class="range-info">Normal: 20% - 80%</span>
+                </div>
+            </div>
+
+            <!-- GAS METANO (CH4) -->
+            <div class="metric-card card-gas" id="card-gas">
+                <div class="card-glow"></div>
+                <div class="card-header">
+                    <h3>PRODUCCION CH4</h3>
+                    <i class="fa-solid fa-radiation icon"></i>
+                </div>
+                <div class="card-value">
+                    <span id="gas-val">----</span><span class="unit">PPM</span>
+                </div>
+                <div class="card-status-badge badge-safe" id="gas-badge">
+                    SEGURO
+                </div>
+                <div class="card-footer">
+                    <span class="range-info">Alerta: sin produccion de gas</span>
+                </div>
+            </div>
+
+            <!-- DISTANCIA (NIVEL) -->
+            <div class="metric-card card-dist" id="card-dist">
+                <div class="card-glow"></div>
+                <div class="card-header">
+                    <h3>NIVEL DEL REACTOR</h3>
+                    <i class="fa-solid fa-ruler-vertical icon"></i>
+                </div>
+                
+                <div class="dist-visual-container">
+                    <!-- Representacion de tanque -->
+                    <div class="tank-container">
+                        <div class="tank-fill" id="tank-fill-bar"></div>
+                        <div class="tank-value" id="tank-percentage">0%</div>
+                    </div>
+                    <div class="dist-text-area">
+                        <div class="card-value-small">
+                            <span id="dist-val">--.-</span><span class="unit">cm</span>
+                        </div>
+                        <span class="range-info">Distancia sensor-superficie</span>
+                    </div>
+                </div>
+                
+                <div class="card-footer">
+                    <span class="range-info">Lejos = vacio | cerca = lleno</span>
+                </div>
+            </div>
+
+            <!-- DIOXIDO DE CARBONO (CO2) -->
+            <div class="metric-card card-co2" id="card-co2">
+                <div class="card-glow"></div>
+                <div class="card-header">
+                    <h3>DIOXIDO DE CARBONO (CO2)</h3>
+                    <i class="fa-solid fa-cloud icon"></i>
+                </div>
+                <div class="card-value">
+                    <span id="co2-val">----</span><span class="unit">PPM</span>
+                </div>
+                <div class="card-footer">
+                    <span class="range-info">MH-Z19C UART GPIO16/GPIO17</span>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- SECCION DE GRAFICOS Y CONTROLES -->
+        <div class="main-content-layout">
+            
+            <!-- PANEL DE GRAFICOS -->
+            <div class="charts-panel">
+                <div class="panel-header">
+                    <h2><i class="fa-solid fa-chart-line"></i> TELEMETRIA EN TIEMPO REAL</h2>
+                    <div class="chart-toolbar">
+                        <div class="time-selector">
+                            <button class="time-btn active" data-hours="1">Ultima Hora</button>
+                            <button class="time-btn" data-hours="6">6 Horas</button>
+                            <button class="time-btn" data-hours="24">24 Horas</button>
+                        </div>
+                        <div class="chart-nav">
+                            <button class="chart-nav-btn" id="chart-prev" title="Ver lecturas anteriores">
+                                <i class="fa-solid fa-chevron-left"></i>
+                            </button>
+                            <button class="chart-nav-btn active" id="chart-live" title="Seguir lecturas en vivo">
+                                <i class="fa-solid fa-satellite-dish"></i>
+                            </button>
+                            <button class="chart-nav-btn" id="chart-next" title="Ver lecturas siguientes">
+                                <i class="fa-solid fa-chevron-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chart-live-strip">
+                    <div class="chart-live-item">
+                        <span>Temp</span>
+                        <strong><span id="chart-temp-val">--.-</span> C</strong>
+                    </div>
+                    <div class="chart-live-item">
+                        <span>Humedad</span>
+                        <strong><span id="chart-hum-val">--.-</span> %</strong>
+                    </div>
+                    <div class="chart-live-item">
+                        <span>CH4</span>
+                        <strong><span id="chart-gas-val">----</span> PPM</strong>
+                    </div>
+                    <div class="chart-live-item">
+                        <span>CO2</span>
+                        <strong><span id="chart-co2-val">----</span> PPM</strong>
+                    </div>
+                    <div class="chart-live-item">
+                        <span>Nivel</span>
+                        <strong><span id="chart-dist-val">--.-</span> %</strong>
+                    </div>
+                    <div class="chart-live-item">
+                        <span>Vista</span>
+                        <strong id="chart-range-label">0 de 0</strong>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <div class="chart-wrapper">
+                        <canvas id="tempHumChart"></canvas>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="gasChart"></canvas>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="co2Chart"></canvas>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="distChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PANEL DE CONTROL Y CONFIGURACION -->
+            <div class="sidebar-panel">
+                
+                <!-- CONTROL DE ACCIONES -->
+                <div class="control-box">
+                    <h3>
+                        <i class="fa-solid fa-sliders"></i> ACCIONES DE DISPOSITIVO
+                        <i class="fa-solid fa-circle-info info-icon" title="Calibrar MQ-4 requiere aire limpio y sensor ya precalentado. Reiniciar corta la conexion unos segundos."></i>
+                    </h3>
+                    <div class="button-group">
+                        <button class="btn btn-warning" id="btn-calibrate">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> Calibrar MQ-4
+                        </button>
+                        <button class="btn btn-danger" id="btn-reboot">
+                            <i class="fa-solid fa-power-off"></i> Reiniciar ESP32
+                        </button>
+                    </div>
+                    <div class="led-control">
+                        <span>LED de Estado (PIN 2):</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="led-toggle">
+                            <label for="led-toggle"></label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- UMBRALES DE ALERTA -->
+                <div class="control-box">
+                    <h3>
+                        <i class="fa-solid fa-bell"></i> UMBRALES DE ALERTA
+                        <i class="fa-solid fa-circle-info info-icon" title="Define a partir de que valores el dashboard dispara alarmas visuales y sonoras. Solo afecta el navegador, no el firmware."></i>
+                    </h3>
+                    <div class="form-group">
+                        <label for="threshold-gas">Produccion minima CH4 (PPM):</label>
+                        <input type="number" id="threshold-gas" class="form-input" value="50" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label for="threshold-dist">Nivel maximo reactor (%):</label>
+                        <input type="number" id="threshold-dist" class="form-input" value="90" min="1" max="100">
+                    </div>
+                    <div class="form-group">
+                        <label for="threshold-temp-max">Temp. Maxima (C):</label>
+                        <input type="number" id="threshold-temp-max" class="form-input" value="38" min="10">
+                    </div>
+                    <button class="btn btn-primary" id="btn-save-thresholds">
+                        <i class="fa-solid fa-floppy-disk"></i> Guardar Umbrales
+                    </button>
+                    <small class="form-hint">Estas alertas solo suenan mientras esta pestana este abierta; no reconfiguran el ESP32.</small>
+                </div>
+
+                <!-- CONFIGURACION DE WIFI / SERVIDOR -->
+                <div class="control-box">
+                    <h3>
+                        <i class="fa-solid fa-wifi"></i> RED & SERVIDOR
+                        <i class="fa-solid fa-circle-info info-icon" title="Configura la conexion inalambrica del ESP32 y a donde envia sus lecturas por HTTP. No es necesaria si usas solo USB/Serial."></i>
+                    </h3>
+
+                    <div class="wifi-status-card" id="wifi-status-card">
+                        <div class="wifi-status-row">
+                            <span class="wifi-status-badge" id="wifi-status-badge">
+                                <i class="fa-solid fa-circle-question"></i> Sin datos
+                            </span>
+                        </div>
+                        <div class="wifi-status-details">
+                            <div><span class="label">SSID:</span> <span id="wifi-status-ssid">--</span></div>
+                            <div><span class="label">IP:</span> <span id="wifi-status-ip">--</span></div>
+                            <div><span class="label">Conectado hace:</span> <span id="wifi-status-uptime">--</span></div>
+                            <div><span class="label">Endpoint activo:</span> <span id="wifi-status-endpoint">--</span></div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="wifi-ssid-input">SSID WiFi:</label>
+                        <input type="text" id="wifi-ssid-input" class="form-input" placeholder="Nombre red">
+                    </div>
+                    <div class="form-group">
+                        <label for="wifi-pass-input">Contrasena WiFi:</label>
+                        <div class="password-field">
+                            <input type="password" id="wifi-pass-input" class="form-input" placeholder="Clave red">
+                            <button type="button" class="password-toggle-btn" id="wifi-pass-toggle" title="Mostrar/ocultar contrasena">
+                                <i class="fa-solid fa-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" id="btn-save-wifi">
+                        <i class="fa-solid fa-wifi"></i> Guardar WiFi
+                    </button>
+                    <small class="form-hint">
+                        El ESP32 aplica las credenciales al instante y reintenta conectar solo cada 10s
+                        si falla, para no saturar el router. El estado de arriba se actualiza en cuanto
+                        llegue la primera trama por WiFi.
+                    </small>
+                    <hr class="separator">
+                    <div class="form-group">
+                        <label for="server-url-input">URL Servidor REST:</label>
+                        <input type="text" id="server-url-input" class="form-input" placeholder="http://192.168.1.XX:8000/api/readings">
+                    </div>
+                    <div class="auto-ip-box" id="auto-ip-box">
+                        <span id="auto-ip-text">Detectando IP de este navegador...</span>
+                        <button class="btn btn-secondary btn-inline" id="btn-use-detected-ip">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> Usar esta IP
+                        </button>
+                    </div>
+                    <div class="auto-ip-warning hidden" id="ip-mismatch-warning">
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                        El ESP32 esta reportando un endpoint distinto al de este navegador
+                        (probablemente cambiaste de red). Toca "Usar esta IP" para corregirlo.
+                    </div>
+                    <button class="btn btn-primary" id="btn-save-server">
+                        <i class="fa-solid fa-cloud-arrow-up"></i> Guardar Endpoint
+                    </button>
+                    <small class="form-hint">
+                        Este servidor sirve el dashboard y recibe las lecturas en el mismo puerto,
+                        asi que la IP con la que abriste esta pagina en el navegador SIEMPRE es la
+                        IP correcta para el ESP32 (salvo que hayas entrado por "localhost").
+                    </small>
+                </div>
+
+                <div class="control-box">
+                    <h3>
+                        <i class="fa-solid fa-clock"></i> INTERVALOS DE MUESTREO
+                        <i class="fa-solid fa-circle-info info-icon" title="Bajar estos valores da lecturas mas frecuentes pero satura mas el puerto serial/WiFi. Los valores por defecto sirven para la mayoria de los casos."></i>
+                    </h3>
+                    <div class="form-group">
+                        <label for="interval-mq-input">Intervalo MQ-4 (ms):</label>
+                        <input type="number" id="interval-mq-input" class="form-input" value="200" min="50">
+                    </div>
+                    <div class="form-group">
+                        <label for="interval-us-input">Intervalo Ultrasonido (ms):</label>
+                        <input type="number" id="interval-us-input" class="form-input" value="50" min="20">
+                    </div>
+                    <div class="form-group">
+                        <label for="interval-out-input">Intervalo Envio (ms):</label>
+                        <input type="number" id="interval-out-input" class="form-input" value="1000" min="200">
+                    </div>
+                    <button class="btn btn-primary" id="btn-save-intervals">
+                        <i class="fa-solid fa-floppy-disk"></i> Guardar Intervalos
+                    </button>
+                </div>
+
+                <div class="control-box">
+                    <h3>
+                        <i class="fa-solid fa-ruler-combined"></i> CALIBRACION REACTOR
+                        <i class="fa-solid fa-circle-info info-icon" title="Distancia vacio/lleno define el 0% y 100% del nivel. Offset/escala corrige el error propio del sensor ultrasonico (ver GUIA_CALIBRACION_PRECISION.md para el calculo exacto)."></i>
+                    </h3>
+                    <div class="form-group">
+                        <label for="reactor-empty-input">Distancia reactor vacio (cm):</label>
+                        <input type="number" id="reactor-empty-input" class="form-input" value="200" min="2" max="450">
+                    </div>
+                    <div class="form-group">
+                        <label for="reactor-full-input">Distancia reactor lleno (cm):</label>
+                        <input type="number" id="reactor-full-input" class="form-input" value="20" min="2" max="450">
+                    </div>
+                    <button class="btn btn-primary" id="btn-save-reactor-levels">
+                        <i class="fa-solid fa-floppy-disk"></i> Guardar Calibracion
+                    </button>
+                    <small class="form-hint">Mide con cinta metrica la distancia real del sensor al fondo (lleno) y al nivel minimo (vacio) del reactor.</small>
+                    <hr class="separator">
+                    <div class="form-group">
+                        <label for="distance-offset-input">Offset AJ-SR04M (cm):</label>
+                        <input type="number" id="distance-offset-input" class="form-input" value="0" step="0.1" min="-100" max="100">
+                    </div>
+                    <div class="form-group">
+                        <label for="distance-scale-input">Escala AJ-SR04M:</label>
+                        <input type="number" id="distance-scale-input" class="form-input" value="1" step="0.001" min="0.5" max="1.5">
+                    </div>
+                    <button class="btn btn-primary" id="btn-save-distance-calibration">
+                        <i class="fa-solid fa-ruler"></i> Guardar Ajuste Distancia
+                    </button>
+                    <small class="form-hint">Calcula estos dos valores con 2 puntos de referencia reales, no a ojo (formula en la guia de calibracion).</small>
+                </div>
+
+                <!-- CALIBRACION MULTIPUNTO MQ-4 -->
+                <div class="control-box">
+                    <h3>
+                        <i class="fa-solid fa-chart-line"></i> CURVA DE CALIBRACION MQ-4
+                        <i class="fa-solid fa-circle-info info-icon" title="Ajusta la curva PPM=A*ratio^B de tu sensor especifico usando concentraciones de CH4 conocidas, en vez de la curva generica del datasheet."></i>
+                    </h3>
+                    <div class="form-group">
+                        <label>Estado actual:</label>
+                        <input type="text" id="mq4-curve-status" class="form-input" value="Sin datos" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="cal-point-ppm-input">PPM CH4 de referencia expuesto ahora:</label>
+                        <input type="number" id="cal-point-ppm-input" class="form-input" placeholder="Ej: 1000" min="1" step="1">
+                    </div>
+                    <div class="button-group">
+                        <button class="btn btn-warning" id="btn-add-cal-point">
+                            <i class="fa-solid fa-plus"></i> Agregar Punto (~10s)
+                        </button>
+                        <button class="btn btn-primary" id="btn-fit-curve">
+                            <i class="fa-solid fa-wave-square"></i> Ajustar Curva
+                        </button>
+                    </div>
+                    <div class="button-group">
+                        <button class="btn btn-secondary" id="btn-clear-cal-points">
+                            <i class="fa-solid fa-eraser"></i> Borrar Puntos
+                        </button>
+                        <button class="btn btn-danger" id="btn-reset-curve">
+                            <i class="fa-solid fa-rotate-left"></i> Restaurar Curva Datasheet
+                        </button>
+                    </div>
+                    <small class="form-hint">
+                        Expone el sensor a una concentracion de CH4 conocida (bombona de gas de referencia
+                        o comparacion simultanea con un analizador ya calibrado), espera a que la lectura
+                        se estabilice, escribe el PPM real en el campo y agrega el punto. Repite con al menos
+                        2-3 concentraciones distintas y separadas antes de "Ajustar Curva".
+                    </small>
+                </div>
+
+                <!-- CALIBRACION DHT11 -->
+                <div class="control-box">
+                    <h3>
+                        <i class="fa-solid fa-temperature-half"></i> AJUSTE DHT11
+                        <i class="fa-solid fa-circle-info info-icon" title="Corrige el sesgo del sensor comparando contra un termometro/higrometro de referencia. No mejora la resolucion de fabrica (+/-2C, +/-5% RH)."></i>
+                    </h3>
+                    <div class="form-group">
+                        <label for="dht-temp-offset-input">Offset temperatura (C):</label>
+                        <input type="number" id="dht-temp-offset-input" class="form-input" value="0" step="0.1" min="-15" max="15">
+                    </div>
+                    <div class="form-group">
+                        <label for="dht-hum-offset-input">Offset humedad (%):</label>
+                        <input type="number" id="dht-hum-offset-input" class="form-input" value="0" step="0.1" min="-30" max="30">
+                    </div>
+                    <button class="btn btn-primary" id="btn-save-dht-offset">
+                        <i class="fa-solid fa-floppy-disk"></i> Guardar Ajuste DHT11
+                    </button>
+                    <small class="form-hint">
+                        Compara contra un termometro/higrometro de referencia y usa la diferencia
+                        (referencia - lectura DHT11) como offset.
+                    </small>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- PANEL HISTORICO Y EXPORTACION -->
+        <section class="history-panel">
+            <div class="panel-header">
+                <h2><i class="fa-solid fa-database"></i> HISTORIAL DE LECTURAS</h2>
+                <div class="actions">
+                    <button class="btn btn-success" id="btn-export-csv">
+                        <i class="fa-solid fa-file-csv"></i> Exportar a CSV
+                    </button>
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <table id="history-table">
+                    <thead>
+                        <tr>
+                            <th>Fecha/Hora (Local)</th>
+                            <th>Temp. (C)</th>
+                            <th>Humedad (%)</th>
+                            <th>Gas Metano (PPM)</th>
+                            <th>CO2 (PPM)</th>
+                            <th>Distancia (cm)</th>
+                            <th>R0 MQ4</th>
+                            <th>Uptime (s)</th>
+                            <th>Origen</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-table-body">
+                        <tr>
+                            <td colspan="9" class="no-data">Cargando datos historicos...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- LOG EN CONSOLA WEB -->
+    <footer class="system-footer">
+        <p>SISTEMA IoT MONITOR V2.0 | CONECTADO A TRAVES DE FASTAPI BACKEND</p>
+    </footer>
+
+    <!-- Custom JS -->
+    <script src="/static/js/app.js?v=auto-ip-detect-20260810-1"></script>
+</body>
+</html>

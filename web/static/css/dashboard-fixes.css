@@ -1,0 +1,295 @@
+.chart-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.chart-nav {
+    display: flex;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    padding: 2px;
+}
+
+.chart-nav-btn {
+    width: 34px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.chart-nav-btn:hover:not(:disabled),
+.chart-nav-btn.active {
+    background: var(--neon-cyan);
+    color: var(--text-dark);
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+}
+
+.chart-nav-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.35;
+}
+
+.chart-live-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+}
+
+.chart-live-item {
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(0, 240, 255, 0.12);
+    border-radius: 8px;
+    padding: 10px 12px;
+    min-height: 58px;
+}
+
+.chart-live-item > span {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+
+.chart-live-item strong {
+    display: block;
+    color: var(--text-main);
+    font-family: var(--font-display);
+    font-size: 1rem;
+    line-height: 1.4;
+    margin-top: 3px;
+}
+
+@media (max-width: 760px) {
+    .chart-live-strip {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+    }
+}
+
+.btn-secondary {
+    background: rgba(160, 174, 192, 0.12);
+    color: var(--text-main);
+    border: 1px solid rgba(160, 174, 192, 0.4);
+}
+.btn-secondary:hover {
+    background: rgba(160, 174, 192, 0.25);
+    box-shadow: 0 0 12px rgba(160, 174, 192, 0.25);
+}
+
+.form-hint {
+    display: block;
+    margin-top: 8px;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    line-height: 1.4;
+}
+
+.auto-ip-box {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: rgba(0, 240, 255, 0.06);
+    border: 1px dashed rgba(0, 240, 255, 0.3);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 8px 0;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.auto-ip-box .btn-inline {
+    width: auto;
+    padding: 6px 10px;
+    font-size: 0.68rem;
+    flex-shrink: 0;
+}
+
+.auto-ip-warning {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 159, 28, 0.12);
+    border: 1px solid rgba(255, 159, 28, 0.4);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 8px 0;
+    font-size: 0.72rem;
+    color: var(--neon-orange, #ff9f1c);
+}
+
+.auto-ip-warning.hidden {
+    display: none;
+}
+
+.form-hint code {
+    background: rgba(0, 240, 255, 0.08);
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--neon-cyan);
+}
+
+/* Icono de ayuda contextual en encabezados de panel */
+.control-box h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.info-icon {
+    margin-left: auto;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    cursor: help;
+    opacity: 0.75;
+}
+.info-icon:hover {
+    color: var(--neon-cyan);
+    opacity: 1;
+}
+
+/* Barras de calidad de senal WiFi (header) */
+.signal-bars {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    margin-left: 8px;
+    height: 14px;
+}
+.signal-bars .bar {
+    display: inline-block;
+    width: 3px;
+    background: rgba(160, 174, 192, 0.3);
+    border-radius: 1px;
+}
+.signal-bars .bar-1 { height: 4px; }
+.signal-bars .bar-2 { height: 7px; }
+.signal-bars .bar-3 { height: 10px; }
+.signal-bars .bar-4 { height: 14px; }
+.signal-bars .bar-active { background: var(--neon-green); }
+.signal-bars[data-quality="debil"] .bar-active { background: var(--neon-orange); }
+.signal-bars[data-quality="muy-debil"] .bar-active { background: var(--neon-red); }
+
+/* Tarjeta de estado de conexion WiFi */
+.wifi-status-card {
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(0, 240, 255, 0.12);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 14px;
+}
+.wifi-status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-display);
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 20px;
+}
+.wifi-status-badge.state-connected {
+    background: rgba(57, 255, 20, 0.12);
+    color: var(--neon-green);
+    border: 1px solid var(--neon-green);
+}
+.wifi-status-badge.state-disconnected {
+    background: rgba(255, 7, 58, 0.12);
+    color: var(--neon-red);
+    border: 1px solid var(--neon-red);
+}
+.wifi-status-badge.state-reconnecting {
+    background: rgba(255, 159, 28, 0.12);
+    color: var(--neon-orange);
+    border: 1px solid var(--neon-orange);
+}
+.wifi-status-badge.state-unconfigured {
+    background: rgba(160, 174, 192, 0.12);
+    color: var(--text-muted);
+    border: 1px solid rgba(160, 174, 192, 0.4);
+}
+.wifi-status-details {
+    margin-top: 8px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 4px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+.wifi-status-details .label {
+    color: var(--text-main);
+    font-weight: 600;
+    margin-right: 4px;
+}
+
+/* Campo de contrasena con boton de mostrar/ocultar */
+.password-field {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.password-field .form-input {
+    flex: 1;
+    padding-right: 38px;
+}
+.password-toggle-btn {
+    position: absolute;
+    right: 8px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+}
+.password-toggle-btn:hover {
+    color: var(--neon-cyan);
+}
+
+/* Guia rapida colapsable */
+.quick-guide {
+    margin-bottom: 18px;
+}
+.quick-guide-toggle {
+    cursor: pointer;
+    user-select: none;
+}
+.toggle-arrow {
+    margin-left: auto;
+    transition: transform 0.25s ease;
+}
+.toggle-arrow.collapsed {
+    transform: rotate(-90deg);
+}
+.quick-guide-body {
+    margin-top: 10px;
+    max-height: 500px;
+    overflow: hidden;
+    transition: max-height 0.3s ease, opacity 0.3s ease;
+    opacity: 1;
+}
+.quick-guide-body.collapsed {
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+}
+.quick-guide-body ol {
+    margin: 0;
+    padding-left: 20px;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    line-height: 1.6;
+}
+.quick-guide-body li {
+    margin-bottom: 6px;
+}
+.quick-guide-body li strong {
+    color: var(--text-main);
+}
