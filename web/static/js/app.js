@@ -334,6 +334,10 @@ muteBtn.addEventListener("click", () => {
 function initCharts() {
     const commonGridColor = 'rgba(255, 255, 255, 0.05)';
     const commonTextColor = '#8a99ad';
+
+    // Ocultar puntos globalmente: solo visibles al hacer hover
+    Chart.defaults.datasets.line.pointRadius = 0;
+    Chart.defaults.datasets.line.pointHoverRadius = 5;
     
     // 1. Grafico Temperatura + Humedad
     const ctxTempHum = document.getElementById('tempHumChart').getContext('2d');
@@ -350,7 +354,11 @@ function initCharts() {
                     backgroundColor: 'rgba(255, 7, 58, 0.05)',
                     borderWidth: 2,
                     tension: 0.3,
-                    fill: false
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHoverBackgroundColor: '#ff073a',
+                    pointHoverBorderColor: '#fff'
                 },
                 {
                     label: 'Humedad (%)',
@@ -360,7 +368,11 @@ function initCharts() {
                     backgroundColor: 'rgba(0, 240, 255, 0.05)',
                     borderWidth: 2,
                     tension: 0.3,
-                    fill: false
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHoverBackgroundColor: '#00f0ff',
+                    pointHoverBorderColor: '#fff'
                 }
             ]
         },
@@ -411,7 +423,11 @@ function initCharts() {
                 backgroundColor: 'rgba(255, 159, 28, 0.15)',
                 borderWidth: 2,
                 tension: 0.3,
-                fill: true
+                fill: true,
+                pointRadius: 0,
+                pointHoverRadius: 5,
+                pointHoverBackgroundColor: '#ff9f1c',
+                pointHoverBorderColor: '#fff'
             }]
         },
         options: {
@@ -449,7 +465,11 @@ function initCharts() {
                 backgroundColor: 'rgba(57, 255, 20, 0.12)',
                 borderWidth: 2,
                 tension: 0.3,
-                fill: true
+                fill: true,
+                pointRadius: 0,
+                pointHoverRadius: 5,
+                pointHoverBackgroundColor: '#39ff14',
+                pointHoverBorderColor: '#fff'
             }]
         },
         options: {
@@ -487,7 +507,11 @@ function initCharts() {
                 backgroundColor: 'rgba(0, 240, 255, 0.05)',
                 borderWidth: 2,
                 tension: 0.3,
-                fill: false
+                fill: false,
+                pointRadius: 0,
+                pointHoverRadius: 5,
+                pointHoverBackgroundColor: '#00f0ff',
+                pointHoverBorderColor: '#fff'
             }]
         },
         options: {
