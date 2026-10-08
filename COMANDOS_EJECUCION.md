@@ -20,7 +20,6 @@ Esto instala tambien `websockets`, que FastAPI/Uvicorn necesita para que funcion
 
 Si PowerShell bloquea la activacion del entorno virtual:
 
-
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 .\venv\Scripts\Activate.ps1
@@ -28,17 +27,31 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ## 2. Configurar PostgreSQL
 
-El proyecto ya tiene `DATABASE_URL` configurado en `web\database.py`.
+La conexión se carga desde `web/.env`, que está excluido de Git. Para cambiarla, edita ese archivo localmente con este formato; no pegues la URL real en documentación ni la subas al repositorio:
 
-Si quieres usar otra base de datos sin tocar codigo:
-
-```powershell
-$env:DATABASE_URL="postgresql://usuario:password@host/database?sslmode=require"
+```dotenv
+DATABASE_URL=postgresql://usuario:password@host/database?sslmode=require
 ```
+
+Una variable `DATABASE_URL` definida en Windows tiene prioridad sobre el valor de `web/.env`.
 
 ## 3. Ejecutar backend y dashboard
 
 Desde la carpeta `web`:
+
+Si el ESP32 está conectado por USB, fija el puerto para que el backend no intente abrir otro COM:
+
+```powershell
+$env:ESP32_SERIAL_PORT="COM3"
+```
+
+Usa el COM que aparece para el ESP32 en el Administrador de dispositivos. Cierra Arduino Serial Monitor mientras el backend usa ese puerto.
+
+Para usar solo WiFi y no abrir ningún puerto serial:
+
+```powershell
+$env:ESP32_SERIAL_PORT="disabled"
+```
 
 ```powershell
 python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -81,7 +94,7 @@ En Arduino IDE:
 5. Carga el sketch.
 6. Abre Monitor Serial a `115200 baud`.
 
-El ESP32 envia lecturas por USB serial automaticamente. El backend detecta el puerto COM y las muestra en el dashboard.
+El ESP32 toma lecturas de DHT11 y MH-Z19C y publica telemetria aproximadamente cada segundo. El ESP32 envia lecturas por USB serial automaticamente; el backend tambien persiste como maximo una lectura por segundo. El backend detecta el puerto COM y las muestra en el dashboard.
 
 ## 6. Configurar WiFi del ESP32
 

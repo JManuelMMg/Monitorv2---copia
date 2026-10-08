@@ -1,0 +1,253 @@
+#include <HardwareSerial.h>
+#include <time.h>
+#include <Preferences.h>
+
+#define RX_PIN 16
+#define TX_PIN 17
+
+HardwareSerial co2Serial(2);
+Preferences prefs;
+
+#define INTERVALO_LECTURA 1000  // 1 segundo
+
+byte cmdReadCO2[9]   = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+byte cmdZeroCalib[9] = {0xFF, 0x01, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78};
+byte cmdABC_Off[9]   = {0xFF, 0x01, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86};
+byte cmdABC_On[9]    = {0xFF, 0x01, 0x79, 0x01, 0x00, 0x00, 0x00, 0x00, 0x85};
+
+unsigned long ultimaLectura = 0;
+int contadorLecturas = 0;
+time_t horaActual;
+char bufferFechaHora[32];
+unsigned long ultimoSegundo = 0;
+
+bool parseFechaHora(const String& entrada, time_t& resultado) {
+  int year, month, day, hour, minute, second;
+  if (sscanf(entrada.c_str(), "%d,%d,%d,%d,%d,%d",
+             &year, &month, &day, &hour, &minute, &second) != 6) {
+    return false;
+  }
+  if (year < 1970 || year > 2099 || month < 1 || month > 12 ||
+      day < 1 || day > 31 || hour < 0 || hour > 23 ||
+      minute < 0 || minute > 59 || second < 0 || second > 59) {
+    return false;
+  }
+
+  struct tm timeinfo = {};
+  timeinfo.tm_year = year - 1900;
+  timeinfo.tm_mon = month - 1;
+  timeinfo.tm_mday = day;
+  timeinfo.tm_hour = hour;
+  timeinfo.tm_min = minute;
+  timeinfo.tm_sec = second;
+  timeinfo.tm_isdst = -1;
+
+  time_t candidate = mktime(&timeinfo);
+  struct tm normalized = {};
+  if (candidate < 0 || gmtime_r(&candidate, &normalized) == nullptr) return false;
+  if (normalized.tm_year != year - 1900 || normalized.tm_mon != month - 1 ||
+      normalized.tm_mday != day || normalized.tm_hour != hour ||
+      normalized.tm_min != minute || normalized.tm_sec != second) {
+    return false;
+  }
+
+  resultado = candidate;
+  return true;
+}
+
+void leerFechaHoraSerial(time_t& destino) {
+  Serial.println("Ingresa fecha y hora UTC con formato YYYY,MM,DD,HH,MM,SS:");
+  while (true) {
+    while (!Serial.available()) delay(100);
+    String entrada = Serial.readStringUntil('\n');
+    entrada.trim();
+    if (parseFechaHora(entrada, destino)) {
+      Serial.print("Hora configurada: ");
+      Serial.println(entrada);
+      return;
+    }
+    Serial.println("Fecha u hora invalida; vuelve a intentarlo.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  setenv("TZ", "UTC0", 1);
+  tzset();
+  co2Serial.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
+  
+  Serial.println("=========================================");
+  Serial.println("  Sistema de Monitoreo CO2 - MH-Z19C");
+  Serial.println("  (Hora automática con memoria interna)");
+  Serial.println("=========================================");
+  
+  // Abrir memoria no volátil
+  prefs.begin("reloj", false);
+  
+  // Verificar si ya hay una hora guardada
+  if (prefs.isKey("ultima_hora")) {
+    horaActual = prefs.getLong("ultima_hora");
+
+    Serial.print("Ultima hora guardada (no incluye el tiempo apagado): ");
+    Serial.println(obtenerFechaHora());
+  } else {
+    leerFechaHoraSerial(horaActual);
+  }
+  
+  prefs.putLong("ultima_hora", horaActual);
+  
+  Serial.println("⏳ Esperando 3 minutos para calentamiento del sensor...");
+  Serial.println("=========================================\n");
+  
+  unsigned long inicioCalentamiento = millis();
+  delay(180000);
+  horaActual += (millis() - inicioCalentamiento) / 1000;
+  ultimoSegundo = millis();
+  prefs.putLong("ultima_hora", horaActual);
+  
+  Serial.println("✅ Sensor listo. Lecturas automáticas iniciadas.");
+  Serial.println("Comandos: 2=Calibrar | 3=Desactivar ABC | 4=Activar ABC | 5=Actualizar hora");
+  Serial.println("=========================================\n");
+  
+  ultimaLectura = millis();
+}
+
+void loop() {
+  // Actualizar hora cada segundo
+  if (millis() - ultimoSegundo >= 1000) {
+    unsigned long segundosTranscurridos = (millis() - ultimoSegundo) / 1000;
+    horaActual += segundosTranscurridos;
+    ultimoSegundo += segundosTranscurridos * 1000;
+    
+    static unsigned long contadorGuardado = 0;
+    contadorGuardado += segundosTranscurridos;
+    if (contadorGuardado >= 60) {
+      prefs.putLong("ultima_hora", horaActual);
+      contadorGuardado = 0;
+    }
+  }
+  
+  // Lectura automática cada INTERVALO_LECTURA milisegundos
+  if (millis() - ultimaLectura >= INTERVALO_LECTURA) {
+    leerSensorConFechaHora();
+    ultimaLectura = millis();
+  }
+  
+  // Comandos manuales
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    
+    if (command == '\r' || command == '\n' || command == ' ') {
+      return;
+    }
+    
+    switch (command) {
+      case '2':
+        calibrarZero();
+        break;
+      case '3':
+        controlarABC(false);
+        break;
+      case '4':
+        controlarABC(true);
+        break;
+      case '5':
+        actualizarHora();
+        break;
+    }
+  }
+}
+
+String obtenerFechaHora() {
+  struct tm timeinfo = {};
+  if (gmtime_r(&horaActual, &timeinfo) == nullptr) return "hora invalida";
+  
+  snprintf(bufferFechaHora, sizeof(bufferFechaHora),
+           "%04d-%02d-%02d %02d:%02d:%02d",
+           timeinfo.tm_year + 1900,
+           timeinfo.tm_mon + 1,
+           timeinfo.tm_mday,
+           timeinfo.tm_hour,
+           timeinfo.tm_min,
+           timeinfo.tm_sec);
+  
+  return String(bufferFechaHora);
+}
+
+void leerSensorConFechaHora() {
+  contadorLecturas++;
+  
+  while (co2Serial.available()) {
+    co2Serial.read();
+  }
+  delay(100);
+  
+  co2Serial.write(cmdReadCO2, 9);
+  delay(1000);
+  
+  String fechaHora = obtenerFechaHora();
+  
+  if (co2Serial.available() >= 9) {
+    byte response[9];
+    co2Serial.readBytes(response, 9);
+    
+    byte checksum = 0;
+    for (int i = 1; i < 8; i++) checksum += response[i];
+    checksum = 0xFF - checksum + 1;
+    
+    if (response[0] == 0xFF && response[1] == 0x86 && response[8] == checksum) {
+      int co2 = (response[2] << 8) + response[3];
+      int temp = response[4] - 40;
+      
+      Serial.print("[");
+      Serial.print(fechaHora);
+      Serial.print("] #");
+      Serial.print(contadorLecturas);
+      Serial.print(" | CO2: ");
+      Serial.print(co2);
+      Serial.print(" ppm | Temp: ");
+      Serial.print(temp);
+      Serial.println(" °C");
+    } else {
+      Serial.print("[");
+      Serial.print(fechaHora);
+      Serial.print("] #");
+      Serial.print(contadorLecturas);
+      Serial.println(" |  Error checksum");
+    }
+  } else {
+    Serial.print("[");
+    Serial.print(fechaHora);
+    Serial.print("] #");
+    Serial.print(contadorLecturas);
+    Serial.println(" | ⚠️ Timeout");
+  }
+}
+
+void calibrarZero() {
+  Serial.println("\n⚠️  ATENCIÓN: ¿Estás en AIRE EXTERIOR (400 ppm)?");
+  Serial.println("  Calibrando en 10 segundos...");
+  
+  delay(10000);
+  
+  co2Serial.write(cmdZeroCalib, 9);
+  delay(2000);
+  
+  Serial.println("✅ Calibración enviada. Reinicia el sensor (desconecta 5V 10 seg).\n");
+}
+
+void controlarABC(bool activar) {
+  if (activar) {
+    co2Serial.write(cmdABC_On, 9);
+    Serial.println("\n✅ ABC ACTIVADA (uso en exteriores/ventilado).\n");
+  } else {
+    co2Serial.write(cmdABC_Off, 9);
+    Serial.println("\n🚫 ABC DESACTIVADA (uso en interiores cerrados).\n");
+  }
+  delay(1000);
+}
+
+void actualizarHora() {
+  leerFechaHoraSerial(horaActual);
+  prefs.putLong("ultima_hora", horaActual);
+}

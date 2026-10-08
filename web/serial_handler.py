@@ -3,21 +3,23 @@ import serial.tools.list_ports
 import threading
 import json
 import time
-from database import save_reading
+import os
+from typing import Any, Callable, Dict, Optional
 
 class SerialHandler:
-    def __init__(self, baudrate=115200, db_save_interval=5):
+    def __init__(self, baudrate=115200, port=None):
         self.baudrate = baudrate
-        self.db_save_interval = db_save_interval
+        self.configured_port = port or os.getenv("ESP32_SERIAL_PORT")
         self.serial_port = None
         self.running = False
         self.thread = None
-        self.last_db_save = 0
         self.latest_data = {}
-        self.on_data_received = None  # Callback to broadcast WebSocket data
+        self.on_data_received: Optional[Callable[[Dict[str, Any]], None]] = None
         self.lock = threading.Lock()
 
     def start(self):
+        if self.running:
+            return
         self.running = True
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -29,6 +31,8 @@ class SerialHandler:
                 self.serial_port.close()
             except:
                 pass
+        if self.thread and self.thread is not threading.current_thread():
+            self.thread.join(timeout=2)
 
     def send_command(self, cmd_json):
         if self.serial_port and self.serial_port.is_open:
@@ -43,22 +47,24 @@ class SerialHandler:
         return False
 
     def _find_port(self):
+        if self.configured_port and self.configured_port.strip().lower() in {"off", "none", "disabled"}:
+            return None
+        if self.configured_port:
+            return self.configured_port
+
         ports = serial.tools.list_ports.comports()
         for port in ports:
             # Look for common ESP32 / USB-Serial chips
             desc = port.description.lower()
-            if any(x in desc for x in ["silicon labs", "ch340", "usb serial", "cp210", "mbed"]):
+            if any(x in desc for x in ["esp32", "silicon labs", "ch340", "usb serial", "cp210", "mbed"]):
                 return port.device
-        # Fallback to the first available COM port if any exists
-        if ports:
-            return ports[0].device
         return None
 
     def _run(self):
+        retry_delay = 2
         while self.running:
             port = self._find_port()
             if not port:
-                # Silently wait, avoid flooding logs
                 time.sleep(3)
                 continue
 
@@ -69,6 +75,7 @@ class SerialHandler:
                 
                 self.serial_port.reset_input_buffer()
                 self.serial_port.reset_output_buffer()
+                retry_delay = 2
 
                 while self.running:
                     if not self.serial_port.is_open:
@@ -81,6 +88,9 @@ class SerialHandler:
                     if line.startswith("{") and line.endswith("}"):
                         try:
                             data = json.loads(line)
+                            if not isinstance(data, dict):
+                                print(f"[Serial] Ignorando JSON que no es un objeto: {line}")
+                                continue
                             if not all(key in data for key in ("temp", "hum", "ppm", "dist")):
                                 print(f"[ESP32 Log]: {line}")
                                 continue
@@ -94,18 +104,6 @@ class SerialHandler:
                             if self.on_data_received:
                                 self.on_data_received(self.latest_data)
 
-                            # Save every valid reading so PostgreSQL matches the dashboard stream.
-                            save_reading(
-                                temp=data.get("temp", 0.0),
-                                hum=data.get("hum", 0.0),
-                                ppm=data.get("ppm", 0.0),
-                                co2_ppm=data.get("co2_ppm"),
-                                dist=data.get("dist", 0.0),
-                                mq_r0=data.get("mq_r0", 0.0),
-                                uptime=data.get("uptime", 0),
-                                wifi=data.get("wifi", False),
-                                rssi=data.get("rssi", 0)
-                            )
                         except json.JSONDecodeError:
                             print(f"[ESP32 Log]: {line}")
                     else:
@@ -118,4 +116,13 @@ class SerialHandler:
                         self.serial_port.close()
                     except:
                         pass
-                time.sleep(3)
+                self.serial_port = None
+                if self.running:
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30)
+
+            if self.serial_port and not self.serial_port.is_open:
+                self.serial_port = None
+                if self.running:
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30)

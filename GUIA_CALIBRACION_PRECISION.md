@@ -28,12 +28,21 @@ resultado en `Preferences` (memoria no volátil), igual que R0.
 
 ### Procedimiento paso a paso
 
-1. **Primero calibra R0 como siempre** (`{"cmd":"calibrate"}` o botón
-   "Calibrar MQ-4"), con el sensor en aire limpio real y ya precalentado
-   (respeta `mq_warmup_ms`, 5 minutos por defecto). Ahora esto además rechaza
-   la calibración si detecta lecturas inestables (`cv_pct > 25%`) — si te
-   rechaza la calibración, es que hubo corriente de aire o movimiento cerca
-   del sensor durante la medición; repite en un ambiente más quieto.
+1. **Primero calibra R0** con el sensor en aire limpio real. Para el primer
+   uso, deja el sensor encendido y estabilizado durante 2-24 horas, según la
+   nota del procedimiento de calibración; el `mq_warmup_ms` de 5 minutos solo
+   evita medir inmediatamente tras cada reinicio y no sustituye ese burn-in.
+   Desde la web o enviando `{"cmd":"calibrate"}` por serial se inicia la
+   calibración. En el Monitor Serial también puedes enviar `c` y Enter. Toma
+   100 muestras durante unos 50 segundos, usa `Rs/R0 = 4.85` como factor de
+   aire limpio empírico y guarda R0 en memoria no volátil. Ese factor se eligió
+   para este montaje; el valor genérico del datasheet es 4.4 y no es universal.
+   Se rechazan lecturas inestables (`cv_pct > 25%`) o fuera del rango esperado.
+   Si falla, revisa que el sensor esté realmente en aire limpio y repite sin
+   corrientes de aire ni movimiento cerca del sensor.
+
+   Para borrar R0 y forzar una calibración nueva, envía `b` y Enter por serial
+   o `{"cmd":"reset_mq4_calibration"}`. Esto no borra la curva multipunto.
 
 2. **Consigue puntos de referencia.** Necesitas exponer el sensor a
    concentraciones de CH4 que conozcas con certeza. En orden de preferencia:

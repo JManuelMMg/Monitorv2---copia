@@ -1,0 +1,757 @@
+#include <Arduino.h>
+#include <Preferences.h>
+#include <math.h>
+#include <time.h>
+
+// =====================================================
+// ⚠️ NOTA DE HARDWARE CRÍTICA:
+// Si el ESP32 se reinicia solo (POWERON_RESET), soldar un condensador 
+// electrolítico de 100µF a 470µF (16V o más) entre 5V y GND del MQ-4.
+// =====================================================
+
+// 1. CONFIGURACIÓN DEL HARDWARE
+const int MQ4_PIN = 34;
+const float V_SENSOR = 5.0;       // Voltaje de alimentación del sensor
+const float RL_KOHM = 10.0;       // Resistencia de carga del módulo
+
+
+// =====================================================
+// 2. CONFIGURACIÓN INICIAL DE FECHA Y HORA
+// =====================================================
+// ⚠️ CONFIGURA AQUÍ LA FECHA Y HORA REAL AL ENCENDER EL ESP32.
+//
+// Ejemplo:
+// 22 de septiembre de 2026
+// 12:30:00 del mediodía
+//
+// El ESP32 utilizará esta fecha/hora como punto de partida
+// y posteriormente avanzará automáticamente los segundos.
+//
+// SIN Wi-Fi
+// SIN NTP
+// SIN RTC EXTERNO
+// =====================================================
+
+const int ANIO_INICIAL = 2026;
+const int MES_INICIAL = 9;
+const int DIA_INICIAL = 22;
+
+const int HORA_INICIAL = 12;
+const int MINUTO_INICIAL = 30;
+const int SEGUNDO_INICIAL = 0;
+
+
+// =====================================================
+// 3. CONSTANTES DE CALIBRACIÓN (DATASHEET + AJUSTE EMPÍRICO)
+// =====================================================
+
+// CH4 (metano) - datasheet
+const float CH4_M = -0.354;
+const float CH4_B = 1.062;
+
+// Propano / LPG - AJUSTADO exactamente a la curva del datasheet Fig.2
+const float LPG_M = -0.3452;
+const float LPG_B = 1.2022;
+
+// Factor aire limpio:
+// Datasheet típico ≈ 4.36
+// Tus mediciones reales estuvieron entre 4.9 y 6.6 → usamos 4.85
+// Si después de calibrar ves Rs/R0 muy diferente de 4.5-5.5, vuelve a calibrar.
+const float FACTOR_AIRE_LIMPIO = 4.85;
+
+
+// =====================================================
+// 4. VARIABLES GLOBALES Y MEMORIA
+// =====================================================
+
+float R0_KOHM = NAN;
+
+Preferences memoria;
+
+unsigned long ultimoTiempoLectura = 0;
+const unsigned long INTERVALO_LECTURA = 1500; // 1.5 segundos
+
+
+// =====================================================
+// 5. CONFIGURACIÓN DEL TIMESTAMP
+// =====================================================
+
+struct tm fechaHoraInicial = {};
+time_t tiempoInicialEpoch = 0;
+
+unsigned long tiempoInicioMillis = 0;
+
+
+// =====================================================
+// 6. INICIALIZAR FECHA Y HORA
+// =====================================================
+
+void inicializarTimestamp() {
+
+  fechaHoraInicial = {};
+
+  fechaHoraInicial.tm_year = ANIO_INICIAL - 1900;
+  fechaHoraInicial.tm_mon  = MES_INICIAL - 1;
+  fechaHoraInicial.tm_mday = DIA_INICIAL;
+
+  fechaHoraInicial.tm_hour = HORA_INICIAL;
+  fechaHoraInicial.tm_min  = MINUTO_INICIAL;
+  fechaHoraInicial.tm_sec  = SEGUNDO_INICIAL;
+
+  fechaHoraInicial.tm_isdst = -1;
+
+  tiempoInicialEpoch = mktime(&fechaHoraInicial);
+  tiempoInicioMillis = millis();
+
+  Serial.println();
+  Serial.println("==========================================");
+  Serial.println(" TIMESTAMP INICIALIZADO");
+  Serial.println("==========================================");
+
+  Serial.printf(
+    "Fecha inicial: %04d-%02d-%02d\n",
+    ANIO_INICIAL,
+    MES_INICIAL,
+    DIA_INICIAL
+  );
+
+  Serial.printf(
+    "Hora inicial: %02d:%02d:%02d\n",
+    HORA_INICIAL,
+    MINUTO_INICIAL,
+    SEGUNDO_INICIAL
+  );
+
+  Serial.println(
+    "El timestamp avanzará automáticamente."
+  );
+
+  Serial.println(
+    "==========================================");
+}
+
+
+// =====================================================
+// 7. OBTENER TIMESTAMP ACTUAL
+// =====================================================
+
+bool obtenerTimestamp(struct tm &fechaHoraActual) {
+
+  // Tiempo transcurrido desde el arranque del ESP32
+  unsigned long segundosTranscurridos =
+    (millis() - tiempoInicioMillis) / 1000;
+
+  time_t tiempoActual =
+    tiempoInicialEpoch + segundosTranscurridos;
+
+  return gmtime_r(&tiempoActual, &fechaHoraActual) != nullptr;
+}
+
+
+// =====================================================
+// 8. IMPRIMIR TIMESTAMP
+// =====================================================
+
+void imprimirTimestamp() {
+
+  struct tm fechaHoraActual = {};
+
+  if (!obtenerTimestamp(fechaHoraActual)) {
+
+    Serial.print(
+      "Timestamp: NO_DISPONIBLE"
+    );
+
+    return;
+  }
+
+  Serial.printf(
+    "Timestamp: %04d-%02d-%02dT%02d:%02d:%02dZ",
+    fechaHoraActual.tm_year + 1900,
+    fechaHoraActual.tm_mon + 1,
+    fechaHoraActual.tm_mday,
+    fechaHoraActual.tm_hour,
+    fechaHoraActual.tm_min,
+    fechaHoraActual.tm_sec
+  );
+}
+
+
+// =====================================================
+// 9. FUNCIONES DE LECTURA Y CÁLCULO
+// =====================================================
+
+float leerVoltaje() {
+
+  #if defined(ESP32)
+
+    return analogReadMilliVolts(MQ4_PIN) / 1000.0;
+
+  #else
+
+    return analogRead(MQ4_PIN) * (5.0 / 1023.0);
+
+  #endif
+}
+
+
+float calcularRs() {
+
+  float v_out = leerVoltaje();
+
+  // Protección contra saturación
+  if (v_out <= 0.05 || v_out >= (V_SENSOR - 0.05)) {
+
+    return NAN;
+  }
+
+  return RL_KOHM * ((V_SENSOR / v_out) - 1.0);
+}
+
+
+float promedioRs(int muestras, int pausa_ms) {
+
+  float suma = 0;
+  int validas = 0;
+
+  for (int i = 0; i < muestras; i++) {
+
+    float rs = calcularRs();
+
+    if (!isnan(rs) && rs > 1.0 && rs < 1000.0) {
+
+      suma += rs;
+      validas++;
+    }
+
+    delay(pausa_ms);
+  }
+
+  return (validas > 0) ? (suma / validas) : NAN;
+}
+
+
+// =====================================================
+// 10. CÁLCULO DE PPM (CH4 y PROPANO)
+// =====================================================
+
+float calcularPPM_CH4(float rs) {
+
+  if (isnan(rs) || isnan(R0_KOHM) || R0_KOHM <= 0)
+
+    return NAN;
+
+  float ratio = rs / R0_KOHM;
+
+  if (ratio <= 0.05)
+
+    return 50000.0;
+
+  float ppm =
+    pow(
+      10.0,
+      (log10(ratio) - CH4_B) / CH4_M
+    );
+
+  return constrain(
+    ppm,
+    0.0,
+    50000.0
+  );
+}
+
+
+float calcularPPM_Propano(float rs) {
+
+  if (isnan(rs) || isnan(R0_KOHM) || R0_KOHM <= 0)
+
+    return NAN;
+
+  float ratio = rs / R0_KOHM;
+
+  if (ratio <= 0.05)
+
+    return 50000.0;
+
+  float ppm =
+    pow(
+      10.0,
+      (log10(ratio) - LPG_B) / LPG_M
+    );
+
+  return constrain(
+    ppm,
+    0.0,
+    50000.0
+  );
+}
+
+
+// =====================================================
+// 11. GESTIÓN DE MEMORIA (R0)
+// =====================================================
+
+void guardarR0(float r0) {
+
+  memoria.begin(
+    "mq4_calib",
+    false
+  );
+
+  memoria.putFloat(
+    "R0",
+    r0
+  );
+
+  memoria.end();
+}
+
+
+float cargarR0() {
+
+  memoria.begin(
+    "mq4_calib",
+    true
+  );
+
+  float valor =
+    memoria.getFloat(
+      "R0",
+      NAN
+    );
+
+  memoria.end();
+
+  return valor;
+}
+
+
+void borrarR0() {
+
+  memoria.begin(
+    "mq4_calib",
+    false
+  );
+
+  memoria.clear();
+
+  memoria.end();
+
+  R0_KOHM = NAN;
+
+  Serial.println(
+    "-> R0 borrado de la memoria."
+  );
+}
+
+
+// =====================================================
+// 12. CALIBRACIÓN EN AIRE LIMPIO (MEJORADA)
+// =====================================================
+
+void calibrarR0() {
+
+  Serial.println();
+  Serial.println("==========================================");
+  Serial.println(" INICIANDO CALIBRACIÓN DE R0 (AIRE LIMPIO)");
+  Serial.println("==========================================");
+
+  Serial.println(
+    "⚠️ Asegúrate de que el sensor esté en aire LIMPIO."
+  );
+
+  Serial.println(
+    "⚠️ Debe llevar encendido al menos 2-24 horas (Burn-in)."
+  );
+
+  Serial.println(
+    "Promediando lecturas durante 20 segundos..."
+  );
+
+  for (int i = 5; i > 0; i--) {
+
+    Serial.print(i);
+    Serial.print("...");
+
+    delay(1000);
+  }
+
+  Serial.println("\nMidiendo...");
+
+  float rs_aire =
+    promedioRs(
+      100,
+      200
+    );
+
+  if (isnan(rs_aire) || rs_aire <= 0) {
+
+    Serial.println(
+      "❌ ERROR: No se pudo obtener una lectura válida de Rs."
+    );
+
+    return;
+  }
+
+  float R0_calculado =
+    rs_aire / FACTOR_AIRE_LIMPIO;
+
+  // Validación de cordura
+  if (R0_calculado < 3.0 ||
+      R0_calculado > 80.0) {
+
+    Serial.print(
+      "⚠️ ADVERTENCIA: R0 inusual ("
+    );
+
+    Serial.print(
+      R0_calculado,
+      2
+    );
+
+    Serial.println(
+      " kOhm)."
+    );
+
+    Serial.println(
+      "   Posibles causas: gas presente, sensor sin burn-in, o RL incorrecta."
+    );
+  }
+
+  R0_KOHM =
+    R0_calculado;
+
+  guardarR0(
+    R0_KOHM
+  );
+
+  // Diagnóstico completo
+  float ratio_aire =
+    rs_aire / R0_KOHM;
+
+  Serial.println(
+    "------------------------------------------"
+  );
+
+  Serial.print(
+    "✅ Rs en aire limpio: "
+  );
+
+  Serial.print(
+    rs_aire,
+    3
+  );
+
+  Serial.println(
+    " kOhm"
+  );
+
+  Serial.print(
+    "✅ R0 calculado y guardado: "
+  );
+
+  Serial.print(
+    R0_KOHM,
+    3
+  );
+
+  Serial.println(
+    " kOhm"
+  );
+
+  Serial.print(
+    "✅ Rs/R0 en aire limpio: "
+  );
+
+  Serial.print(
+    ratio_aire,
+    2
+  );
+
+  Serial.println(
+    "  (debe estar cerca de 4.5 - 5.5)"
+  );
+
+  if (ratio_aire < 3.8 ||
+      ratio_aire > 6.5) {
+
+    Serial.println(
+      "⚠️ El ratio de aire limpio se sale del rango ideal."
+    );
+
+    Serial.println(
+      "   Revisa que no haya gas residual y vuelve a calibrar."
+    );
+
+  } else {
+
+    Serial.println(
+      "✅ Calibración dentro de rango aceptable."
+    );
+  }
+
+  Serial.println(
+    "==========================================\n"
+  );
+}
+
+
+// =====================================================
+// 13. SETUP Y LOOP PRINCIPAL
+// =====================================================
+
+void setup() {
+
+  Serial.begin(
+    115200
+  );
+
+  setenv("TZ", "UTC0", 1);
+  tzset();
+
+  delay(1000);
+
+  #if defined(ESP32)
+
+    analogReadResolution(12);
+
+    analogSetAttenuation(
+      ADC_11db
+    );
+
+  #endif
+
+  // ===================================================
+  // INICIALIZAR TIMESTAMP
+  // ===================================================
+
+  inicializarTimestamp();
+
+  // ===================================================
+  // ENCABEZADO PRINCIPAL
+  // ===================================================
+
+  Serial.println();
+  Serial.println("==========================================");
+  Serial.println(" DETECTOR MQ-4 (METANO / PROPANO) v4.1");
+  Serial.println(" LPG ajustado a curva datasheet Fig.2");
+  Serial.println("==========================================");
+
+  // ===================================================
+  // CARGAR R0
+  // ===================================================
+
+  R0_KOHM =
+    cargarR0();
+
+  if (!isnan(R0_KOHM) &&
+      R0_KOHM > 0) {
+
+    Serial.print(
+      "-> R0 cargado desde memoria: "
+    );
+
+    Serial.print(
+      R0_KOHM,
+      3
+    );
+
+    Serial.println(
+      " kOhm"
+    );
+
+  } else {
+
+    Serial.println(
+      "-> AVISO: No hay R0 guardado. Escribe 'c' + Enter para calibrar."
+    );
+  }
+
+  Serial.println();
+  Serial.println("Comandos:");
+  Serial.println("  c = Calibrar R0 en aire limpio");
+  Serial.println("  b = Borrar R0 de la memoria");
+  Serial.println();
+
+  // ===================================================
+  // ENCABEZADO DE LOS REGISTROS
+  // ===================================================
+
+  Serial.println(
+    "Rs/R0 | CH4 | Propano | Estado | timestamp"
+  );
+
+  Serial.println(
+    "---------------------------------------------------------------------"
+  );
+}
+
+
+// =====================================================
+// 14. LOOP PRINCIPAL
+// =====================================================
+
+void loop() {
+
+  // ===================================================
+  // 1. COMANDOS DEL USUARIO
+  // ===================================================
+
+  if (Serial.available()) {
+
+    char comando =
+      Serial.read();
+
+    if (comando == 'c' ||
+        comando == 'C') {
+
+      calibrarR0();
+    }
+
+    if (comando == 'b' ||
+        comando == 'B') {
+
+      borrarR0();
+    }
+
+    while (Serial.available())
+
+      Serial.read();
+  }
+
+
+  // ===================================================
+  // 2. SIN R0 NO CALCULAMOS
+  // ===================================================
+
+  if (isnan(R0_KOHM) ||
+      R0_KOHM <= 0) {
+
+    delay(2000);
+
+    return;
+  }
+
+
+  // ===================================================
+  // 3. LECTURA NO BLOQUEANTE
+  // ===================================================
+
+  if (millis() -
+      ultimoTiempoLectura >=
+      INTERVALO_LECTURA) {
+
+    ultimoTiempoLectura =
+      millis();
+
+    float rs =
+      promedioRs(
+        5,
+        15
+      );
+
+    if (!isnan(rs)) {
+
+      float ratio =
+        rs / R0_KOHM;
+
+      float ppm_ch4 =
+        calcularPPM_CH4(rs);
+
+      float ppm_propano =
+        calcularPPM_Propano(rs);
+
+      // =================================================
+      // DATOS DEL SENSOR
+      // =================================================
+
+      Serial.print(
+        "Rs/R0: "
+      );
+
+      Serial.print(
+        ratio,
+        3
+      );
+
+      Serial.print(
+        " | CH4: "
+      );
+
+      Serial.print(
+        ppm_ch4,
+        1
+      );
+
+      Serial.print(
+        " ppm | Propano: "
+      );
+
+      Serial.print(
+        ppm_propano,
+        1
+      );
+
+      Serial.print(
+        " ppm | Estado: "
+      );
+
+
+      // =================================================
+      // ESTADO
+      // =================================================
+
+      if (ratio > 3.8) {
+
+        Serial.print(
+          "SEGURO (Aire limpio)"
+        );
+
+      } else if (ratio > 1.8) {
+
+        Serial.print(
+          "PRECAUCIÓN (Gas detectado)"
+        );
+
+      } else if (ratio > 1.0) {
+
+        Serial.print(
+          "ALERTA (Concentración alta)"
+        );
+
+      } else {
+
+        Serial.print(
+          "PELIGRO (Fuga severa)"
+        );
+      }
+
+
+      // =================================================
+      // TIMESTAMP COMO ÚLTIMO ATRIBUTO
+      // =================================================
+
+      Serial.print(
+        " | "
+      );
+
+      imprimirTimestamp();
+
+      Serial.println();
+
+    } else {
+
+      Serial.print(
+        "Lectura de sensor no válida (saturado o desconectado)"
+      );
+
+      Serial.print(
+        " | "
+      );
+
+      imprimirTimestamp();
+
+      Serial.println();
+    }
+  }
+}

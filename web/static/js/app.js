@@ -10,8 +10,10 @@ let audioInterval = null;
 let historicalData = [];
 let currentHoursFilter = 1;
 let pollingInterval = null;
+let socketRetryDelay = 1000;
 const CHART_WINDOW_SIZE = 60;
 const MAX_CHART_POINTS = 2000;
+const CHART_ANIMATION_MS = 450;
 let chartViewMode = "live";
 let chartWindowStart = 0;
 let chartSeries = {
@@ -68,8 +70,15 @@ function parseTimestamp(timestamp) {
 }
 
 function formatNumber(value, decimals = 1, fallback = "--") {
+    if (value === null || value === undefined || value === "") return fallback;
     const numberValue = Number(value);
     return Number.isFinite(numberValue) ? numberValue.toFixed(decimals) : fallback;
+}
+
+function getSeriesValue(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : null;
 }
 
 function getReadingLabel(reading) {
@@ -79,7 +88,17 @@ function getReadingLabel(reading) {
 
 function getReadingKey(reading) {
     if (!reading) return "";
-    return `${reading.timestamp ?? ""}-${reading.uptime ?? ""}-${reading.source ?? ""}`;
+    if (reading.uptime !== undefined && reading.uptime !== null) {
+        return [
+            reading.uptime,
+            reading.temp,
+            reading.hum,
+            reading.ppm,
+            reading.co2_ppm,
+            reading.dist
+        ].join("|");
+    }
+    return `${reading.timestamp ?? ""}-${reading.source ?? ""}`;
 }
 
 function getLevelPercent(data) {
@@ -135,19 +154,19 @@ function renderChartWindow() {
     charts.tempHum.data.labels = chartSeries.labels.slice(start, end);
     charts.tempHum.data.datasets[0].data = chartSeries.temp.slice(start, end);
     charts.tempHum.data.datasets[1].data = chartSeries.hum.slice(start, end);
-    charts.tempHum.update('none');
+    charts.tempHum.update();
 
     charts.gas.data.labels = chartSeries.labels.slice(start, end);
     charts.gas.data.datasets[0].data = chartSeries.ppm.slice(start, end);
-    charts.gas.update('none');
+    charts.gas.update();
 
     charts.co2.data.labels = chartSeries.labels.slice(start, end);
     charts.co2.data.datasets[0].data = chartSeries.co2.slice(start, end);
-    charts.co2.update('none');
+    charts.co2.update();
 
     charts.dist.data.labels = chartSeries.labels.slice(start, end);
     charts.dist.data.datasets[0].data = chartSeries.dist.slice(start, end);
-    charts.dist.update('none');
+    charts.dist.update();
 
     const rangeLabel = document.getElementById("chart-range-label");
     rangeLabel.innerText = total === 0 ? "0 de 0" : `${start + 1}-${Math.min(end, total)} de ${total}`;
@@ -160,10 +179,10 @@ function renderChartWindow() {
 function setChartsFromReadings(readings) {
     chartSeries = {
         labels: readings.map(getReadingLabel),
-        temp: readings.map(r => Number(r.temp) || 0),
-        hum: readings.map(r => Number(r.hum) || 0),
-        ppm: readings.map(r => Number(r.ppm) || 0),
-        co2: readings.map(r => Number(r.co2_ppm) || 0),
+        temp: readings.map(r => getSeriesValue(r.temp)),
+        hum: readings.map(r => getSeriesValue(r.hum)),
+        ppm: readings.map(r => getSeriesValue(r.ppm)),
+        co2: readings.map(r => getSeriesValue(r.co2_ppm)),
         dist: readings.map(r => getLevelPercent(r))
     };
     trimChartSeries();
@@ -173,10 +192,10 @@ function setChartsFromReadings(readings) {
 
 function appendReadingToCharts(data) {
     chartSeries.labels.push(getReadingLabel(data));
-    chartSeries.temp.push(Number(data.temp) || 0);
-    chartSeries.hum.push(Number(data.hum) || 0);
-    chartSeries.ppm.push(Number(data.ppm) || 0);
-    chartSeries.co2.push(Number(data.co2_ppm) || 0);
+    chartSeries.temp.push(getSeriesValue(data.temp));
+    chartSeries.hum.push(getSeriesValue(data.hum));
+    chartSeries.ppm.push(getSeriesValue(data.ppm));
+    chartSeries.co2.push(getSeriesValue(data.co2_ppm));
     chartSeries.dist.push(getLevelPercent(data));
     trimChartSeries();
     renderChartWindow();
@@ -204,7 +223,6 @@ function loadSavedConfig() {
     const savedServerUrl = localStorage.getItem("server_url");
     const savedIntervalMq = localStorage.getItem("interval_mq");
     const savedIntervalUs = localStorage.getItem("interval_us");
-    const savedIntervalOut = localStorage.getItem("interval_out");
     const savedReactorEmpty = localStorage.getItem("reactor_empty_cm");
     const savedReactorFull = localStorage.getItem("reactor_full_cm");
     const savedDistanceOffset = localStorage.getItem("distance_offset_cm");
@@ -220,7 +238,8 @@ function loadSavedConfig() {
     }
     if (savedIntervalMq) document.getElementById("interval-mq-input").value = savedIntervalMq;
     if (savedIntervalUs) document.getElementById("interval-us-input").value = savedIntervalUs;
-    if (savedIntervalOut) document.getElementById("interval-out-input").value = savedIntervalOut;
+    document.getElementById("interval-out-input").value = 1000;
+    localStorage.setItem("interval_out", "1000");
     if (savedReactorEmpty) reactorCalibration.emptyCm = parseFloat(savedReactorEmpty);
     if (savedReactorFull) reactorCalibration.fullCm = parseFloat(savedReactorFull);
     if (savedDistanceOffset) distanceCalibration.offsetCm = parseFloat(savedDistanceOffset);
@@ -348,6 +367,7 @@ function initCharts() {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: { duration: CHART_ANIMATION_MS, easing: "linear" },
             scales: {
                 x: {
                     grid: { color: commonGridColor },
@@ -397,6 +417,7 @@ function initCharts() {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: { duration: CHART_ANIMATION_MS, easing: "linear" },
             scales: {
                 x: {
                     grid: { color: commonGridColor },
@@ -434,6 +455,7 @@ function initCharts() {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: { duration: CHART_ANIMATION_MS, easing: "linear" },
             scales: {
                 x: {
                     grid: { color: commonGridColor },
@@ -471,6 +493,7 @@ function initCharts() {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: { duration: CHART_ANIMATION_MS, easing: "linear" },
             scales: {
                 x: {
                     grid: { color: commonGridColor },
@@ -699,6 +722,22 @@ function processRealtimeReading(data, appendRealtimePoint = true) {
     document.getElementById("hum-val").innerText = formatNumber(data.hum, 1, "--.-");
     document.getElementById("gas-val").innerText = formatNumber(data.ppm, 0, "----");
     document.getElementById("co2-val").innerText = formatNumber(data.co2_ppm, 0, "----");
+    const co2State = document.getElementById("co2-state");
+    if (co2State) {
+        const co2Valid = data.co2_valid === true ||
+            (data.co2_valid === undefined && getSeriesValue(data.co2_ppm) !== null);
+        if (co2Valid) {
+            co2State.innerText = Number(data.co2_ppm) >= 5000
+                ? "Lectura válida; posible saturación"
+                : "Lectura válida";
+        } else if (Number(data.co2_error_count) > 0) {
+            co2State.innerText = `Sin respuesta UART (${data.co2_error_count} fallos)`;
+        } else if (data.co2_ready === false) {
+            co2State.innerText = "Precalentando sensor";
+        } else {
+            co2State.innerText = "Sin lectura válida";
+        }
+    }
     document.getElementById("dist-val").innerText = formatNumber(data.dist, 1, "--.-");
     setChartLiveValues(data);
     
@@ -731,12 +770,22 @@ function processRealtimeReading(data, appendRealtimePoint = true) {
     // 2. Logica del Semaforo de Alerta MQ-4
     const gasBadge = document.getElementById("gas-badge");
     const cardGas = document.getElementById("card-gas");
-    const ppm = data.ppm || 0;
+    const ppm = Number(data.ppm);
+    const mqCalibrated = data.mq_calibrated !== false;
+    const mqValid = data.mq_valid !== false && Number.isFinite(ppm);
     
     cardGas.className = "metric-card card-gas"; // Reset
     gasBadge.className = "card-status-badge";  // Reset
     
-    if (data.mq_ready === false) {
+    if (!mqCalibrated) {
+        gasBadge.innerText = "SIN CALIBRAR";
+        gasBadge.classList.add("badge-warning");
+        cardGas.classList.add("card-alert-gas");
+    } else if (data.mq_valid === false || !mqValid) {
+        gasBadge.innerText = "SIN LECTURA";
+        gasBadge.classList.add("badge-warning");
+        cardGas.classList.add("card-alert-gas");
+    } else if (data.mq_ready === false) {
         gasBadge.innerText = "CALENTANDO";
         gasBadge.classList.add("badge-warning");
         cardGas.classList.add("card-alert-gas");
@@ -775,7 +824,10 @@ function checkAlarmsAndAlerts(data) {
 
     // Evaluaciones
     const levelPct = getLevelPercent(data);
-    activeAlarms.gas = (data.mq_ready !== false && data.ppm !== undefined && data.ppm < thresholds.gas);
+    const mqReadingValid = data.mq_calibrated !== false && data.mq_valid !== false &&
+        getSeriesValue(data.ppm) !== null;
+    activeAlarms.gas = data.mq_ready !== false && mqReadingValid &&
+        Number(data.ppm) < thresholds.gas;
     activeAlarms.obstacle = (levelPct >= thresholds.dist);
     activeAlarms.temp = (data.temp !== undefined && data.temp >= thresholds.tempMax);
 
@@ -843,18 +895,24 @@ function connectWebSocket() {
 
     socket.onopen = () => {
         console.log("WebSocket Conectado!");
+        socketRetryDelay = 1000;
+        stopPollingFallback();
         document.getElementById("conn-status").className = "value status-connected";
         document.getElementById("conn-status").innerHTML = '<i class="fa-solid fa-circle-dot"></i> CONECTADO';
-        startPollingFallback();
     };
 
     socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        const readingKey = getReadingKey(data);
-        const isNewReading = readingKey && readingKey !== lastReadingKey;
-        processRealtimeReading(data, isNewReading);
-        if (isNewReading) {
-            lastReadingKey = readingKey;
+        try {
+            const data = JSON.parse(event.data);
+            if (!data || typeof data !== "object" || Array.isArray(data)) return;
+            const readingKey = getReadingKey(data);
+            const isNewReading = readingKey && readingKey !== lastReadingKey;
+            processRealtimeReading(data, isNewReading);
+            if (isNewReading) {
+                lastReadingKey = readingKey;
+            }
+        } catch (error) {
+            console.warn("Mensaje WebSocket invalido:", error);
         }
     };
 
@@ -863,7 +921,9 @@ function connectWebSocket() {
         document.getElementById("conn-status").className = "value status-disconnected";
         document.getElementById("conn-status").innerHTML = '<i class="fa-solid fa-circle-dot"></i> DESCONECTADO';
         startPollingFallback();
-        setTimeout(connectWebSocket, 3000);
+        const retryDelay = socketRetryDelay;
+        socketRetryDelay = Math.min(socketRetryDelay * 2, 30000);
+        setTimeout(connectWebSocket, retryDelay);
     };
 
     socket.onerror = (err) => {
@@ -960,7 +1020,7 @@ document.getElementById("btn-save-server").addEventListener("click", async () =>
 document.getElementById("btn-save-intervals").addEventListener("click", () => {
     const mqInterval = parseInt(document.getElementById("interval-mq-input").value, 10);
     const usInterval = parseInt(document.getElementById("interval-us-input").value, 10);
-    const outInterval = parseInt(document.getElementById("interval-out-input").value, 10);
+    const outInterval = 1000;
 
     if (Number.isNaN(mqInterval) || Number.isNaN(usInterval) || Number.isNaN(outInterval)) {
         alert("Introduce valores numericos validos para los intervalos.");

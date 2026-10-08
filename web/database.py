@@ -1,15 +1,16 @@
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import os
+from dotenv import load_dotenv
 
-# Neon PostgreSQL connection string
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://neondb_owner:npg_VDShf4Tx5uet@ep-calm-firefly-ap451em3-pooler.c-7.us-east-1.aws.neon.tech/mgasalg?sslmode=require&channel_binding=require"
-)
+load_dotenv(Path(__file__).with_name(".env"), override=False)
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL no está configurada")
     conn = psycopg2.connect(DATABASE_URL)
     conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
     return conn

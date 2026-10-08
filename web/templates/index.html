@@ -166,7 +166,7 @@
                     <span id="co2-val">----</span><span class="unit">PPM</span>
                 </div>
                 <div class="card-footer">
-                    <span class="range-info">MH-Z19C UART GPIO16/GPIO17</span>
+                    <span class="range-info" id="co2-state">Esperando lectura válida</span>
                 </div>
             </div>
 
@@ -374,8 +374,8 @@
                         <input type="number" id="interval-us-input" class="form-input" value="50" min="20">
                     </div>
                     <div class="form-group">
-                        <label for="interval-out-input">Intervalo Envio (ms):</label>
-                        <input type="number" id="interval-out-input" class="form-input" value="1000" min="200">
+                        <label for="interval-out-input">Intervalo Envio (ms, fijo):</label>
+                        <input type="number" id="interval-out-input" class="form-input" value="1000" min="1000" max="1000" readonly>
                     </div>
                     <button class="btn btn-primary" id="btn-save-intervals">
                         <i class="fa-solid fa-floppy-disk"></i> Guardar Intervalos
