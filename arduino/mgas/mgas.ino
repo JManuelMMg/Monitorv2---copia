@@ -2,6 +2,8 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <math.h>
 #include <time.h>
 #include <Arduino.h>
@@ -28,9 +30,12 @@ DHT dht(DHTPIN, DHTTYPE);
 // =====================================================
 // CONFIGURACIÓN PERSISTENTE (MODIFICABLE DESDE LA WEB)
 // =====================================================
-String wifi_ssid = "DESKTOP-OERS02P 2827";
-String wifi_pass = "1122334455";
-String srv_url = "http://192.168.120.186:8000/api/readings";
+// Nunca guardes credenciales reales en el sketch. Se provisionan una vez por
+// Serial y quedan en Preferences (memoria no volátil).
+String wifi_ssid = "";
+String wifi_pass = "";
+String srv_url = "";
+String api_token = "";
 
 float altura_max_biodigestor = 100.0; // Reactor vacío (cm)
 float altura_min_biodigestor = 10.0;  // Reactor lleno (cm)
@@ -68,6 +73,9 @@ const unsigned long TIEMPO_CALENTAMIENTO = 180000; // 3 minutos
 // =====================================================
 Preferences prefs;
 
+// Device identifier (MAC address)
+String device_id = "";
+
 time_t horaActual = 0;
 char bufferFechaHora[32];
 unsigned long ultimoSegundo = 0;
@@ -95,13 +103,34 @@ bool wifi_conectado_previo = false;
 unsigned long ultimo_chequeo_wifi = 0;
 int intentos_reconexion_wifi = 0;
 
+// La red nunca bloquea el muestreo. El loop deposita tramas y una tarea aparte
+// las transmite/reintenta. Si la cola se llena se descarta la más vieja: para
+// telemetría en tiempo real una medición reciente vale más que una atrasada.
+constexpr size_t JSON_BUFFER_SIZE = 768;
+constexpr size_t COMMAND_BUFFER_SIZE = 384;
+constexpr uint8_t TELEMETRY_QUEUE_DEPTH = 12;
+struct TelemetryMessage {
+  char payload[JSON_BUFFER_SIZE];
+};
+struct CommandMessage {
+  char payload[COMMAND_BUFFER_SIZE];
+};
+QueueHandle_t telemetryQueue = nullptr;
+QueueHandle_t commandQueue = nullptr;
+volatile uint32_t wifi_tx_ok = 0;
+volatile uint32_t wifi_tx_failed = 0;
+volatile uint32_t wifi_tx_dropped = 0;
+
 // Modo visual: false = JSON para FastAPI/Web, true = texto legible
 bool modoHumano = false;
 
 // Prototipos
 void procesarComando(String cmd);
 void parseWiFiResponse(String response);
-void sendWiFiTelemetry(const String& jsonPayload);
+bool sendWiFiTelemetry(const char* jsonPayload);
+void telemetryWorker(void* parameter);
+void enqueueWiFiTelemetry(const char* jsonPayload);
+void enqueueRemoteCommand(const String& command);
 void setupWiFi();
 
 // =====================================================
@@ -351,27 +380,105 @@ void setupWiFi() {
     WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
     ultimo_chequeo_wifi = millis();
     Serial.printf("{\"log\":\"Intentando conectar a WiFi SSID: %s\"}\n", wifi_ssid.c_str());
+
+    // Obtener MAC address como identificador único del dispositivo
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char macStr[18];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    device_id = String(macStr);
+    Serial.printf("{\"log\":\"Device ID (MAC): %s\"}\n", device_id.c_str());
   } else {
     Serial.println("{\"log\":\"Sin credenciales WiFi en memoria. Modo Serial activo.\"}");
+    // Obtener MAC address incluso sin WiFi conectado
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char macStr[18];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    device_id = String(macStr);
+    Serial.printf("{\"log\":\"Device ID (MAC): %s\"}\n", device_id.c_str());
   }
 }
 
-void sendWiFiTelemetry(const String& jsonPayload) {
-  if (WiFi.status() != WL_CONNECTED || srv_url.length() == 0) return;
+bool sendWiFiTelemetry(const char* jsonPayload) {
+  if (WiFi.status() != WL_CONNECTED || srv_url.length() == 0) return false;
 
   HTTPClient http;
-  http.begin(srv_url);
-  http.setTimeout(1200); // 1.2 segundos timeout no bloqueante
+  if (!http.begin(srv_url)) {
+    Serial.println("{\"event\":\"wifi_tx\",\"status\":\"invalid_server_url\"}");
+    return false;
+  }
+  http.setConnectTimeout(1200);
+  http.setTimeout(2500);
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Device-ID", device_id);
+  if (api_token.length() > 0) http.addHeader("X-API-Key", api_token);
 
   int httpCode = http.POST(jsonPayload);
   if (httpCode == HTTP_CODE_OK) {
     String response = http.getString();
     parseWiFiResponse(response);
-  } else if (httpCode > 0) {
-    // Código de respuesta distinto a 200
+    http.end();
+    return true;
+  }
+
+  if (httpCode > 0) {
+    Serial.printf("{\"event\":\"wifi_tx\",\"status\":\"http_error\",\"code\":%d}\n", httpCode);
+  } else {
+    Serial.printf("{\"event\":\"wifi_tx\",\"status\":\"network_error\",\"code\":%d,\"detail\":\"%s\"}\n",
+                  httpCode, http.errorToString(httpCode).c_str());
   }
   http.end();
+  return false;
+}
+
+void enqueueWiFiTelemetry(const char* jsonPayload) {
+  if (!telemetryQueue) return;
+
+  TelemetryMessage message = {};
+  strlcpy(message.payload, jsonPayload, sizeof(message.payload));
+  if (xQueueSend(telemetryQueue, &message, 0) == pdTRUE) return;
+
+  // Cola llena: quita la trama más vieja y conserva la más reciente.
+  TelemetryMessage discarded;
+  if (xQueueReceive(telemetryQueue, &discarded, 0) == pdTRUE &&
+      xQueueSend(telemetryQueue, &message, 0) == pdTRUE) {
+    wifi_tx_dropped++;
+  } else {
+    wifi_tx_dropped++;
+  }
+}
+
+void enqueueRemoteCommand(const String& command) {
+  if (!commandQueue || command.length() >= COMMAND_BUFFER_SIZE) {
+    Serial.println("{\"event\":\"wifi_command\",\"status\":\"dropped\"}");
+    return;
+  }
+  CommandMessage message = {};
+  command.toCharArray(message.payload, sizeof(message.payload));
+  if (xQueueSend(commandQueue, &message, 0) != pdTRUE) {
+    Serial.println("{\"event\":\"wifi_command\",\"status\":\"queue_full\"}");
+  }
+}
+
+void telemetryWorker(void* parameter) {
+  TelemetryMessage message;
+  for (;;) {
+    if (xQueueReceive(telemetryQueue, &message, portMAX_DELAY) != pdTRUE) continue;
+
+    bool delivered = false;
+    for (uint8_t attempt = 0; attempt < 3 && !delivered; attempt++) {
+      delivered = sendWiFiTelemetry(message.payload);
+      if (!delivered && attempt < 2) {
+        // 1 s y 2 s: reintento corto, fuera del loop de sensores.
+        vTaskDelay(pdMS_TO_TICKS(1000UL << attempt));
+      }
+    }
+    if (delivered) wifi_tx_ok++;
+    else wifi_tx_failed++;
+  }
 }
 
 void parseWiFiResponse(String response) {
@@ -391,7 +498,9 @@ void parseWiFiResponse(String response) {
     if (closeBrace == -1) break;
 
     String cmd = commandsList.substring(openBrace, closeBrace + 1);
-    procesarComando(cmd);
+    // HTTP corre en la tarea de red. Se entrega al loop para que Preferences,
+    // sensores y cambios de estado sigan teniendo un único propietario.
+    enqueueRemoteCommand(cmd);
 
     searchIdx = closeBrace + 1;
   }
@@ -436,10 +545,22 @@ void procesarComando(String cmd) {
     }
     else if (cmd.indexOf("\"cmd\":\"set_server\"") != -1) {
       String new_url = getStringValue(cmd, "\"url\":");
-      if (new_url.length() > 0) {
+      if (new_url.startsWith("http://") || new_url.startsWith("https://")) {
         srv_url = new_url;
         prefs.putString("srv_url", srv_url);
         Serial.printf("{\"log\":\"URL de servidor REST actualizada: %s\"}\n", srv_url.c_str());
+      } else {
+        Serial.println("{\"log\":\"URL de servidor invalida. Usa http:// o https://\"}");
+      }
+    }
+    else if (cmd.indexOf("\"cmd\":\"set_api_token\"") != -1) {
+      String new_token = getStringValue(cmd, "\"token\":");
+      if (new_token.length() >= 16 && new_token.length() <= 128) {
+        api_token = new_token;
+        prefs.putString("api_token", api_token);
+        Serial.println("{\"log\":\"Token de API actualizado.\"}");
+      } else {
+        Serial.println("{\"log\":\"Token invalido: usa entre 16 y 128 caracteres.\"}");
       }
     }
     else if (cmd.indexOf("\"cmd\":\"set_intervals\"") != -1) {
@@ -571,9 +692,10 @@ void setup() {
 
   // Cargar configuraciones guardadas de NVS
   prefs.begin("monitor", true);
-  wifi_ssid = prefs.getString("wifi_ssid", "");
-  wifi_pass = prefs.getString("wifi_pass", "");
-  srv_url = prefs.getString("srv_url", "http://192.168.1.100:8000/api/readings");
+  wifi_ssid = prefs.getString("wifi_ssid", wifi_ssid);
+  wifi_pass = prefs.getString("wifi_pass", wifi_pass);
+  srv_url = prefs.getString("srv_url", srv_url);
+  api_token = prefs.getString("api_token", api_token);
 
   altura_max_biodigestor = prefs.getFloat("rx_empty", 100.0);
   altura_min_biodigestor = prefs.getFloat("rx_full", 10.0);
@@ -597,6 +719,17 @@ void setup() {
   // Cargar R0
   R0_KOHM = cargarR0();
 
+  telemetryQueue = xQueueCreate(TELEMETRY_QUEUE_DEPTH, sizeof(TelemetryMessage));
+  commandQueue = xQueueCreate(8, sizeof(CommandMessage));
+  if (telemetryQueue) {
+    xTaskCreatePinnedToCore(telemetryWorker, "wifi-tx", 6144, nullptr, 1, nullptr, 0);
+  } else {
+    Serial.println("{\"event\":\"wifi_tx\",\"status\":\"queue_init_failed\"}");
+  }
+  if (!commandQueue) {
+    Serial.println("{\"event\":\"wifi_command\",\"status\":\"queue_init_failed\"}");
+  }
+
   // Iniciar conexión WiFi
   setupWiFi();
 
@@ -615,6 +748,13 @@ void setup() {
 // =====================================================
 void loop() {
   unsigned long ahora = millis();
+
+  // Los comandos recibidos dentro de una respuesta HTTP se ejecutan aquí,
+  // nunca desde la tarea de red.
+  CommandMessage remoteCommand;
+  while (commandQueue && xQueueReceive(commandQueue, &remoteCommand, 0) == pdTRUE) {
+    procesarComando(String(remoteCommand.payload));
+  }
 
   // 1. Reloj interno
   if (ahora - ultimoSegundo >= 1000) {
@@ -719,15 +859,17 @@ void loop() {
     String ip = is_wifi ? WiFi.localIP().toString() : "";
 
     // Armado de la trama JSON completa
-    char jsonBuffer[512];
-    snprintf(
+    char jsonBuffer[JSON_BUFFER_SIZE];
+    int payloadLength = snprintf(
       jsonBuffer, sizeof(jsonBuffer),
       "{\"temp\":%.1f,\"hum\":%.1f,\"ppm\":%.1f,\"co2_ppm\":%d,\"dist\":%.1f,"
       "\"level_pct\":%.1f,\"mq_ready\":%s,\"mq_calibrated\":%s,\"mq_valid\":%s,\"mq_r0\":%.2f,"
       "\"co2_ready\":%s,\"co2_valid\":%s,\"uptime\":%lu,\"wifi\":%s,\"rssi\":%d,"
       "\"ip\":\"%s\",\"server_url\":\"%s\",\"us_offset_cm\":%.2f,\"us_scale\":%.4f,"
       "\"dht_temp_offset\":%.2f,\"dht_hum_offset\":%.2f,"
-      "\"reactor_empty_cm\":%.1f,\"reactor_full_cm\":%.1f}",
+      "\"reactor_empty_cm\":%.1f,\"reactor_full_cm\":%.1f,"
+      "\"device_id\":\"%s\",\"wifi_tx_ok\":%lu,\"wifi_tx_failed\":%lu,"
+      "\"wifi_tx_dropped\":%lu,\"wifi_queue_depth\":%u}",
       t,
       h,
       mqValido ? ch4 : 0.0,
@@ -750,8 +892,18 @@ void loop() {
       dht_temp_offset,
       dht_hum_offset,
       altura_max_biodigestor,
-      altura_min_biodigestor
+      altura_min_biodigestor,
+      device_id.c_str(),
+      static_cast<unsigned long>(wifi_tx_ok),
+      static_cast<unsigned long>(wifi_tx_failed),
+      static_cast<unsigned long>(wifi_tx_dropped),
+      telemetryQueue ? static_cast<unsigned int>(uxQueueMessagesWaiting(telemetryQueue)) : 0
     );
+
+    if (payloadLength < 0 || payloadLength >= static_cast<int>(sizeof(jsonBuffer))) {
+      Serial.println("{\"event\":\"wifi_tx\",\"status\":\"payload_too_large\"}");
+      return;
+    }
 
     // 1. Envío por cable Serial USB
     if (modoHumano) {
@@ -763,9 +915,9 @@ void loop() {
       Serial.println(jsonBuffer);
     }
 
-    // 2. Envío por Wi-Fi si está conectado
+    // 2. Envío por Wi-Fi: se coloca en cola; la tarea de red no detiene sensores.
     if (is_wifi) {
-      sendWiFiTelemetry(String(jsonBuffer));
+      enqueueWiFiTelemetry(jsonBuffer);
     }
   }
 

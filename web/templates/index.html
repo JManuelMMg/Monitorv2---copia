@@ -43,6 +43,10 @@
                     <span class="label">UPTIME:</span>
                     <span id="uptime-val" class="value">00:00:00</span>
                 </div>
+                <div class="status-item">
+                    <span class="label">DISPOSITIVO:</span>
+                    <span id="device-id" class="value">--</span>
+                </div>
                 <div class="status-item wifi-only">
                     <span class="label">SENAL:</span>
                     <span id="wifi-rssi" class="value">0 dBm</span>
@@ -502,11 +506,12 @@
                             <th>R0 MQ4</th>
                             <th>Uptime (s)</th>
                             <th>Origen</th>
+                            <th>Dispositivo</th>
                         </tr>
                     </thead>
                     <tbody id="history-table-body">
                         <tr>
-                            <td colspan="9" class="no-data">Cargando datos historicos...</td>
+                            <td colspan="10" class="no-data">Cargando datos historicos...</td>
                         </tr>
                     </tbody>
                 </table>

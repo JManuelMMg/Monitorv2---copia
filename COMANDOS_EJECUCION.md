@@ -98,7 +98,9 @@ El ESP32 toma lecturas de DHT11 y MH-Z19C y publica telemetria aproximadamente c
 
 ## 6. Configurar WiFi del ESP32
 
-Puedes hacerlo desde el panel web o desde Monitor Serial:
+La primera configuración necesita USB/Serial: un ESP sin WiFi todavía no
+puede recoger comandos que el dashboard deje en la cola. Después de guardar
+la red y la URL, el ESP puede funcionar sin cable.
 
 ```json
 {"cmd":"set_wifi","ssid":"NombreDeTuRed","pass":"TuPassword"}
@@ -123,3 +125,37 @@ ipconfig
 ```
 
 Busca la direccion IPv4 de tu adaptador WiFi o Ethernet.
+
+### Operación solo WiFi y diagnóstico
+
+1. Ejecuta FastAPI con `--host 0.0.0.0` y permite el puerto TCP 8000 en el
+   firewall de Windows para redes privadas.
+2. Arranca el backend con `ESP32_SERIAL_PORT="disabled"` o desconecta el USB;
+   así queda claro que las lecturas entran por WiFi y no por el puerto COM.
+3. Consulta `http://IP_DE_TU_PC:8000/api/devices`. El resultado muestra por
+   ESP el último contacto, RSSI, IP, entregas correctas, fallos, descartes y
+   profundidad de la cola de envío.
+
+El firmware reintenta cada POST fallido hasta dos veces fuera del bucle de
+sensores y conserva hasta 12 muestras. Si la red permanece caída se descartan
+las más antiguas para priorizar el estado actual.
+
+### Token opcional para proteger el endpoint
+
+En la terminal que arranca el servidor define un token de al menos 16
+caracteres antes de ejecutar Uvicorn:
+
+```powershell
+$env:ESP32_API_TOKEN="cambia-esto-por-un-secreto-largo"
+```
+
+Después envíalo una vez por Serial al ESP32:
+
+```json
+{"cmd":"set_api_token","token":"cambia-esto-por-un-secreto-largo"}
+```
+
+Con el token activo, el backend rechaza telemetría sin `X-API-Key`. Úsalo en
+una red privada: HTTP sin TLS no protege el token ante alguien que capture el
+tráfico. Para acceso fuera de la LAN, coloca el backend tras un proxy HTTPS o
+usa un broker MQTT con TLS.

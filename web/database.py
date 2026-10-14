@@ -5,7 +5,7 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).with_name(".env"), override=False)
+load_dotenv(Path(__file__).with_name(".env"), override=True)
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db():
@@ -31,23 +31,25 @@ def init_db():
                         mq_r0 REAL,
                         uptime INTEGER,
                         wifi BOOLEAN,
-                        rssi INTEGER
+                        rssi INTEGER,
+                        device_id VARCHAR(17)
                     )
                 """)
                 cur.execute("ALTER TABLE readings ADD COLUMN IF NOT EXISTS co2_ppm REAL")
+                cur.execute("ALTER TABLE readings ADD COLUMN IF NOT EXISTS device_id VARCHAR(17)")
                 conn.commit()
     except Exception as exc:
         print(f"[DB] No se pudo inicializar PostgreSQL: {exc}")
 
-def save_reading(temp, hum, ppm, dist, mq_r0, uptime, wifi, rssi, co2_ppm=None):
+def save_reading(temp, hum, ppm, dist, mq_r0, uptime, wifi, rssi, co2_ppm=None, device_id=None):
     wifi_val = wifi if isinstance(wifi, bool) else bool(wifi)
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO readings (temp, hum, ppm, co2_ppm, dist, mq_r0, uptime, wifi, rssi)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (temp, hum, ppm, co2_ppm, dist, mq_r0, uptime, wifi_val, rssi))
+                    INSERT INTO readings (temp, hum, ppm, co2_ppm, dist, mq_r0, uptime, wifi, rssi, device_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (temp, hum, ppm, co2_ppm, dist, mq_r0, uptime, wifi_val, rssi, device_id))
                 conn.commit()
     except Exception as exc:
         print(f"[DB] No se pudo guardar lectura: {exc}")
@@ -58,7 +60,7 @@ def get_history(hours=24):
         with get_db() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 cur.execute("""
-                    SELECT timestamp, temp, hum, ppm, co2_ppm, dist, mq_r0, uptime, wifi, rssi
+                    SELECT timestamp, temp, hum, ppm, co2_ppm, dist, mq_r0, uptime, wifi, rssi, device_id
                     FROM readings
                     WHERE timestamp >= %s
                     ORDER BY timestamp ASC
@@ -80,7 +82,7 @@ def get_latest_reading():
         with get_db() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 cur.execute("""
-                    SELECT timestamp, temp, hum, ppm, co2_ppm, dist, mq_r0, uptime, wifi, rssi
+                    SELECT timestamp, temp, hum, ppm, co2_ppm, dist, mq_r0, uptime, wifi, rssi, device_id
                     FROM readings
                     ORDER BY timestamp DESC
                     LIMIT 1

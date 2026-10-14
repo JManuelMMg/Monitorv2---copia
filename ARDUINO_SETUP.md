@@ -156,6 +156,8 @@ Si tienes WiFi disponible, configura desde el dashboard:
 4. **Cada 1000ms**: Envío completo de telemetría
    - Serial + HTTP POST (si WiFi conectado)
    - Guardado en PostgreSQL (throttled cada 5s)
+   - Incluye `device_id` con la dirección MAC del ESP32 para identificarlo en el dashboard y en el historial
+   - PostgreSQL solo guarda cuando MQ-4 reporta estado listo, calibrado y válido, y CO2 reporta estado listo y válido; el dashboard sigue mostrando lecturas en vivo mientras tanto
 
 ---
 

@@ -1,4 +1,4 @@
-from fastapi import BackgroundTasks, FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -10,7 +10,10 @@ import io
 import csv
 import math
 import threading
-from typing import List, Dict, Any
+import os
+import hmac
+from collections import defaultdict, deque
+from typing import Deque, List, Dict, Any
 
 from database import init_db, save_reading, get_history, get_latest_reading
 from serial_handler import SerialHandler
@@ -35,16 +38,24 @@ latest_sensor_data = {
     "rssi": 0,
     "uptime": 0,
     "timestamp": 0,
-    "source": "Ninguno"
+    "source": "Ninguno",
+    "device_id": None
 }
 connected_clients: List[WebSocket] = []
-wifi_command_queue = []
+# Las colas por dispositivo evitan que un ESP consuma comandos destinados a
+# otro. La clave "legacy" conserva compatibilidad con sketches anteriores.
+wifi_command_queues: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
+command_lock = threading.Lock()
+MAX_COMMANDS_PER_DEVICE = 50
+MAX_TELEMETRY_BYTES = 8 * 1024
+ESP32_API_TOKEN = os.getenv("ESP32_API_TOKEN", "")
 global_loop = None
 data_lock = threading.Lock()
 persistence_lock = threading.Lock()
 PERSIST_INTERVAL_SECONDS = 1
-last_persistence_at = 0.0
+last_persistence_at = {}
 recent_readings = {}
+device_status: Dict[str, Dict[str, Any]] = {}
 
 # Instantiate Serial Handler
 serial_handler = SerialHandler()
@@ -68,26 +79,80 @@ def _valid_reading(data: Any) -> bool:
         return False
     if not all(key in data for key in ("temp", "hum", "ppm", "dist")):
         return False
+    # device_id is optional for backward compatibility
+    if "device_id" in data and data["device_id"] is not None:
+        if not isinstance(data["device_id"], str) or len(data["device_id"]) > 17:
+            return False
     return True
 
 
+def _ready_for_persistence(data: Dict[str, Any]) -> bool:
+    readiness_flags = (
+        "mq_ready",
+        "mq_calibrated",
+        "mq_valid",
+        "co2_ready",
+        "co2_valid",
+    )
+    return all(data.get(flag) is True for flag in readiness_flags)
+
+
+def _queue_key(device_id: Any) -> str:
+    return device_id if isinstance(device_id, str) and device_id else "legacy"
+
+
+def _record_device_status(data: Dict[str, Any], source: str) -> None:
+    device_id = _queue_key(data.get("device_id"))
+    device_status[device_id] = {
+        "device_id": data.get("device_id"),
+        "source": source,
+        "last_seen": data.get("timestamp", time.time()),
+        "ip": data.get("ip"),
+        "rssi": data.get("rssi"),
+        "wifi": data.get("wifi"),
+        "wifi_tx_ok": data.get("wifi_tx_ok", 0),
+        "wifi_tx_failed": data.get("wifi_tx_failed", 0),
+        "wifi_tx_dropped": data.get("wifi_tx_dropped", 0),
+        "wifi_queue_depth": data.get("wifi_queue_depth", 0),
+    }
+
+
+def _take_wifi_commands(device_id: Any) -> List[Dict[str, Any]]:
+    """Devuelve solo los comandos pendientes para el ESP que hizo el POST."""
+    key = _queue_key(device_id)
+    with command_lock:
+        commands = list(wifi_command_queues[key])
+        wifi_command_queues[key].clear()
+    return commands
+
+
 def persist_reading_if_due(data: Dict[str, Any]) -> None:
+    if not _ready_for_persistence(data):
+        return
+
     global last_persistence_at
     now = time.monotonic()
     signature = tuple(data.get(key) for key in (
-        "uptime", "temp", "hum", "ppm", "co2_ppm", "dist"
+        "device_id", "uptime", "temp", "hum", "ppm", "co2_ppm", "dist"
     ))
 
     with persistence_lock:
         expired = [key for key, seen_at in recent_readings.items() if now - seen_at > 10]
         for key in expired:
             del recent_readings[key]
+        expired_devices = [
+            device_id for device_id, saved_at in last_persistence_at.items()
+            if now - saved_at > 10
+        ]
+        for device_id in expired_devices:
+            del last_persistence_at[device_id]
         if signature in recent_readings:
             return
         recent_readings[signature] = now
-        if now - last_persistence_at < PERSIST_INTERVAL_SECONDS:
+        device_id = data.get("device_id") or "legacy"
+        if now - last_persistence_at.get(device_id, 0.0) < PERSIST_INTERVAL_SECONDS:
             return
-        last_persistence_at = now
+        last_persistence_at[device_id] = now
 
     save_reading(
         temp=data.get("temp", 20.0),
@@ -98,7 +163,8 @@ def persist_reading_if_due(data: Dict[str, Any]) -> None:
         mq_r0=data.get("mq_r0", 15000.0),
         uptime=data.get("uptime", 0),
         wifi=bool(data.get("wifi", False)),
-        rssi=data.get("rssi", 0)
+        rssi=data.get("rssi", 0),
+        device_id=data.get("device_id")
     )
 
 def handle_incoming_data(data: Dict[str, Any]):
@@ -107,6 +173,7 @@ def handle_incoming_data(data: Dict[str, Any]):
         return
     with data_lock:
         latest_sensor_data.update(data)
+        _record_device_status(data, "Serial")
         snapshot = dict(latest_sensor_data)
     # Broadcast to all connected web clients in a thread-safe way
     if global_loop:
@@ -146,30 +213,50 @@ async def shutdown_event():
 @app.post("/api/readings")
 async def receive_readings(request: Request, background_tasks: BackgroundTasks):
     global latest_sensor_data
+    if ESP32_API_TOKEN:
+        supplied_token = request.headers.get("X-API-Key", "")
+        if not hmac.compare_digest(supplied_token, ESP32_API_TOKEN):
+            raise HTTPException(status_code=401, detail="Invalid ESP32 API token")
+
     try:
-        data = await request.json()
-    except Exception:
-        return {"status": "error", "message": "Invalid JSON"}
+        content_length = int(request.headers.get("content-length", "0"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid Content-Length")
+    if content_length > MAX_TELEMETRY_BYTES:
+        raise HTTPException(status_code=413, detail="Telemetry payload too large")
+
+    try:
+        raw_body = await request.body()
+        if len(raw_body) > MAX_TELEMETRY_BYTES:
+            raise HTTPException(status_code=413, detail="Telemetry payload too large")
+        data = json.loads(raw_body)
+    except HTTPException:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid JSON")
 
     if not _valid_reading(data):
-        return {"status": "ignored", "message": "JSON does not contain a complete sensor reading"}
+        raise HTTPException(status_code=422, detail="JSON does not contain a complete sensor reading")
+
+    header_device_id = request.headers.get("X-Device-ID")
+    if header_device_id and data.get("device_id") and header_device_id != data["device_id"]:
+        raise HTTPException(status_code=400, detail="Device ID header does not match payload")
     
     data["timestamp"] = time.time()
     data["source"] = "WiFi"
     
     with data_lock:
         latest_sensor_data.update(data)
+        _record_device_status(data, "WiFi")
         snapshot = dict(latest_sensor_data)
     
     # Broadcast to all web browsers
     await broadcast_to_clients(snapshot)
     background_tasks.add_task(persist_reading_if_due, data)
 
-    # Fetch and pop commands for ESP32
-    commands = list(wifi_command_queue)
-    wifi_command_queue.clear()
+    commands = _take_wifi_commands(data.get("device_id"))
     
-    return {"status": "ok", "commands": commands}
+    return {"status": "ok", "commands": commands, "server_time": time.time()}
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -191,6 +278,13 @@ async def get_latest_sensor_reading():
         return latest_from_db
     return latest_sensor_data
 
+
+@app.get("/api/devices")
+async def get_devices():
+    """Estado de entrega para diagnóstico y operación con varios ESP32."""
+    with data_lock:
+        return {"devices": list(device_status.values())}
+
 @app.get("/api/export")
 async def export_csv(hours: int = 24):
     history = await asyncio.to_thread(get_history, hours=hours)
@@ -202,7 +296,7 @@ async def export_csv(hours: int = 24):
     writer.writerow([
         "Timestamp (UTC)", "Temperatura (C)", "Humedad (%)", 
         "Gas Metano (PPM)", "CO2 (PPM)", "Distancia (cm)", "MQ4 R0", 
-        "Uptime (s)", "WiFi Conectado", "Senal RSSI"
+        "Uptime (s)", "WiFi Conectado", "Senal RSSI", "Device ID"
     ])
     
     for row in history:
@@ -216,7 +310,8 @@ async def export_csv(hours: int = 24):
             row["mq_r0"],
             row["uptime"],
             "Si" if row["wifi"] else "No",
-            row["rssi"]
+            row["rssi"],
+            row.get("device_id", "")
         ])
         
     output.seek(0)
@@ -228,16 +323,36 @@ async def export_csv(hours: int = 24):
 
 @app.post("/api/command")
 async def send_command(command: Dict[str, Any]):
+    command = dict(command)
+    target_device_id = command.pop("device_id", None)
+    if target_device_id is not None and (
+        not isinstance(target_device_id, str) or len(target_device_id) > 17
+    ):
+        raise HTTPException(status_code=422, detail="Invalid device_id")
+    if not isinstance(command.get("cmd"), str) or not command["cmd"]:
+        raise HTTPException(status_code=422, detail="A non-empty cmd is required")
+
     # Try sending via Serial
     serial_sent = serial_handler.send_command(command)
     
     if not serial_sent:
-        wifi_command_queue.append(command)
+        # La UI añade device_id. Para clientes antiguos se dirige al último
+        # ESP visto, en vez de entregar el comando al primer ESP que consulte.
+        if not target_device_id:
+            with data_lock:
+                target_device_id = latest_sensor_data.get("device_id")
+        key = _queue_key(target_device_id)
+        with command_lock:
+            queue = wifi_command_queues[key]
+            if len(queue) >= MAX_COMMANDS_PER_DEVICE:
+                queue.popleft()
+            queue.append(command)
     
     return {
         "status": "queued",
         "serial_sent": serial_sent,
-        "wifi_queued": not serial_sent
+        "wifi_queued": not serial_sent,
+        "device_id": target_device_id if not serial_sent else None,
     }
 
 # Browser Client WebSocket Connection

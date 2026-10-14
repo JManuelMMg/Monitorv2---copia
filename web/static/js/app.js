@@ -16,6 +16,7 @@ const MAX_CHART_POINTS = 2000;
 const CHART_ANIMATION_MS = 450;
 let chartViewMode = "live";
 let chartWindowStart = 0;
+let activeDeviceId = null;
 let chartSeries = {
     labels: [],
     temp: [],
@@ -75,6 +76,16 @@ function formatNumber(value, decimals = 1, fallback = "--") {
     return Number.isFinite(numberValue) ? numberValue.toFixed(decimals) : fallback;
 }
 
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, character => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+    })[character]);
+}
+
 function getSeriesValue(value) {
     if (value === null || value === undefined || value === "") return null;
     const numberValue = Number(value);
@@ -90,6 +101,7 @@ function getReadingKey(reading) {
     if (!reading) return "";
     if (reading.uptime !== undefined && reading.uptime !== null) {
         return [
+            reading.device_id,
             reading.uptime,
             reading.temp,
             reading.hum,
@@ -601,7 +613,7 @@ function updateHistoryTable(data) {
     tableBody.innerHTML = "";
 
     if (data.length === 0) {
-        tableBody.innerHTML = '<tr><td colspan="9" class="no-data">Sin lecturas registradas.</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="10" class="no-data">Sin lecturas registradas.</td></tr>';
         return;
     }
 
@@ -620,6 +632,7 @@ function updateHistoryTable(data) {
                 <td>${formatNumber(row.mq_r0, 0)}</td>
                 <td>${row.uptime ?? "--"}</td>
                 <td><span class="badge ${row.wifi ? 'badge-safe' : 'badge-warning'}">${row.wifi ? 'WiFi' : 'Serial'}</span></td>
+                <td>${escapeHtml(row.device_id || "--")}</td>
             </tr>
         `;
     });
@@ -707,6 +720,9 @@ function updateWifiStatusCard(data) {
 
 // Procesamiento en tiempo real de los datos
 function processRealtimeReading(data, appendRealtimePoint = true) {
+    if (typeof data.device_id === "string" && data.device_id) {
+        activeDeviceId = data.device_id;
+    }
     if (Number.isFinite(Number(data.reactor_empty_cm)) && Number.isFinite(Number(data.reactor_full_cm))) {
         reactorCalibration.emptyCm = Number(data.reactor_empty_cm);
         reactorCalibration.fullCm = Number(data.reactor_full_cm);
@@ -767,6 +783,7 @@ function processRealtimeReading(data, appendRealtimePoint = true) {
     
     document.getElementById("data-source").innerText = data.source || "SERIAL";
     document.getElementById("uptime-val").innerText = formatUptime(data.uptime || 0);
+    document.getElementById("device-id").textContent = data.device_id || "--";
 
     // Wifi Info
     if (data.source === "WiFi") {
@@ -960,11 +977,17 @@ function connectWebSocket() {
 // Envio de Comandos al API REST
 async function sendCommand(commandData) {
     try {
+        const payload = activeDeviceId
+            ? { ...commandData, device_id: activeDeviceId }
+            : commandData;
         const response = await fetch("/api/command", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(commandData)
+            body: JSON.stringify(payload)
         });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
         const res = await response.json();
         console.log("Comando enviado: ", res);
         return res;
